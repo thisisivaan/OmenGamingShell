@@ -1,0 +1,48 @@
+<Window x:Class="OmenGamingShell.Installer.UninstallWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Uninstall OMEN Gaming Shell" Width="720" Height="440"
+        WindowStartupLocation="CenterScreen" WindowStyle="None" ResizeMode="NoResize"
+        Background="Transparent" Foreground="White" AllowsTransparency="True"
+        Icon="Assets/omen-icon.png" UseLayoutRounding="True" SnapsToDevicePixels="True">
+    <Border Margin="1" Background="#050505" BorderBrush="#25FFFFFF" BorderThickness="1"
+            CornerRadius="16" ClipToBounds="True" SnapsToDevicePixels="True">
+        <Grid Margin="38,30">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <Grid MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
+                <Border Width="286" Height="50" Background="{StaticResource AccentBrush}" HorizontalAlignment="Left">
+                    <Border.OpacityMask>
+                        <ImageBrush ImageSource="Assets/omen-wordmark-mask.png" Stretch="Uniform" />
+                    </Border.OpacityMask>
+                </Border>
+                <Button Content="×" Width="40" Height="40" HorizontalAlignment="Right"
+                        Background="Transparent" FontSize="21" Click="Cancel_Click" />
+            </Grid>
+            <Grid Grid.Row="1" Margin="0,36,0,28">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="190" />
+                </Grid.ColumnDefinitions>
+                <StackPanel VerticalAlignment="Center">
+                    <TextBlock Text="UNINSTALL OMEN GAMING SHELL" FontFamily="Segoe UI Variable Display"
+                               FontSize="27" FontWeight="SemiBold" />
+                    <TextBlock Text="This removes the shell, its shortcuts, and its Windows installation entry."
+                               Width="400" HorizontalAlignment="Left" TextWrapping="Wrap"
+                               Foreground="#A0A0A0" FontSize="14" LineHeight="21" Margin="0,13,0,0" />
+                    <TextBlock x:Name="StatusText" Text="YOUR METADATA AND SETTINGS WILL REMAIN"
+                               Foreground="#777777" FontSize="10" Margin="0,22,0,0" />
+                </StackPanel>
+                <Image Grid.Column="1" Source="Assets/omen-icon.png" Width="150" Height="150" Stretch="Uniform" />
+            </Grid>
+            <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button Content="CANCEL" Width="120" Height="46" Background="Transparent" Click="Cancel_Click" />
+                <Button x:Name="UninstallButton" Content="UNINSTALL" Width="150" Height="46"
+                        Margin="12,0,0,0" Click="Uninstall_Click" />
+            </StackPanel>
+        </Grid>
+    </Border>
+</Window>
