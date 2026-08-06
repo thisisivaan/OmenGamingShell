@@ -6,3 +6,7 @@ obj/
 .dotnet-cli/
 .nuget-packages/
 build/
+
+# Self-contained installer payload (regenerate with scripts/build-installer.ps1)
+OmenGamingShell.Installer/Payload/app/
+OmenGamingShell.Installer/Payload/OmenGamingShell.zip
