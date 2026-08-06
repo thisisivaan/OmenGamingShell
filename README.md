@@ -40,3 +40,7 @@ Open PowerShell and run this only after testing the published executable:
 The script changes the shell only for the current Windows account. Sign out and back in to activate it. It does not configure or launch Explorer as a fallback.
 
 > Warning: this project intentionally has no recovery route to Explorer. A broken executable path or startup crash can leave the account without a usable desktop.
+=======
+# OmenGamingShell
+Omen Gaming Console is a fullscreen WPF launcher for Windows that turns your Start Menu into a living game hub. It scans installed games and apps automatically, separates games from apps with one click, remembers which titles you've hidden, and offers a Quick Launch rail with pin/unpin control. Built with .NET 8 (WPF, x86), it logs diagnostics to %LOCALAPPDATA% and runs from a simple dotnet publish.
+
