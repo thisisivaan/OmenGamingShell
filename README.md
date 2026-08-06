@@ -1,2 +1,2 @@
 # OmenGamingShell
-Windows game &amp; app launcher shell — scans Start Menu shortcuts, pins favorites to Quick Launch, filters games, and launches everything from one fullscreen UI.
+Omen Gaming Console is a fullscreen WPF launcher for Windows that turns your Start Menu into a living game hub. It scans installed games and apps automatically, separates games from apps with one click, remembers which titles you've hidden, and offers a Quick Launch rail with pin/unpin control. Built with .NET 8 (WPF, x86), it logs diagnostics to %LOCALAPPDATA% and runs from a simple dotnet publish.
