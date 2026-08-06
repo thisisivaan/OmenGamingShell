@@ -1,0 +1,51 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Publish (win-x64, self-contained, single file)
+        run: dotnet publish .\OmenGamingShell\OmenGamingShell.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OmenGamingShell-win-x64
+          path: OmenGamingShell\bin\Release\net8.0-windows\win-x64\publish\OmenGamingShell.exe
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: OmenGamingShell-win-x64
+
+      - name: Create release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" OmenGamingShell.exe --generate-notes
