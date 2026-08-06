@@ -40,6 +40,14 @@ dotnet publish .\OmenGamingShell\OmenGamingShell.csproj -c Release -r win-x64 --
 
 The published executable appears in `OmenGamingShell\bin\Release\net8.0-windows\win-x64\publish\`.
 
+To build the installer (`OMEN Gaming Shell Setup.exe`), which bundles a self-contained payload and needs no .NET runtime on the target machine:
+
+```powershell
+.\scripts\build-installer.ps1
+```
+
+The script publishes the shell, rebuilds the embedded payload, and outputs the installer to `build\installer-release\`. The payload is not committed to git, so run the script whenever you need a fresh installer.
+
 ## Configuration
 
 Copy `games.json` beside the published executable and edit it with real executable paths or launcher URIs.
