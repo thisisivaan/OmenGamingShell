@@ -43,9 +43,10 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: OmenGamingShell-win-x64
+          path: release-assets
 
       - name: Create release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
-        run: gh release create "$TAG" OmenGamingShell.exe --generate-notes
+        run: gh release create "$TAG" release-assets/OmenGamingShell.exe --generate-notes
