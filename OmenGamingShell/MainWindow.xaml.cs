@@ -28,13 +28,17 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _clockTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     private readonly DispatcherTimer _cursorHideTimer = new() { Interval = TimeSpan.FromMilliseconds(650) };
     private readonly DispatcherTimer _notificationTimer = new() { Interval = TimeSpan.FromSeconds(4) };
-    private readonly DispatcherTimer _coverExitTimer = new() { Interval = TimeSpan.FromMilliseconds(110) };
+    private readonly DispatcherTimer _coverExitTimer = new() { Interval = TimeSpan.FromMilliseconds(350) };
     private readonly DispatcherTimer _wifiScanTimer = new() { Interval = TimeSpan.FromSeconds(8) };
     private readonly DispatcherTimer _deviceScanTimer = new() { Interval = TimeSpan.FromSeconds(10) };
     private readonly DispatcherTimer _taskViewHotCornerTimer = new() { Interval = TimeSpan.FromMilliseconds(250) };
-    private readonly DispatcherTimer _applicationEdgeTimer = new() { Interval = TimeSpan.FromMilliseconds(250) };
+    private readonly DispatcherTimer _updateCheckTimer = new() { Interval = TimeSpan.FromHours(1) };
+    private bool _updateCheckInProgress;
+    private UpdateReleaseInfo? _pendingRelease;
     private readonly ControllerInput _controller = new();
     private MetadataSettings _metadataSettings = new();
+    private BackgroundSettings _backgroundSettings = new();
+    private bool _customBackgroundActive;
     private InputSettings _inputSettings = new();
     private ControllerProfile _editingControllerProfile = new();
     private string _appliedControllerName = string.Empty;
@@ -43,19 +47,11 @@ public partial class MainWindow : Window
     private string? _pendingCorrectedCover;
     private string? _pendingCorrectedBackground;
     private IReadOnlyList<GameEntry> _allGames = Array.Empty<GameEntry>();
-    private IReadOnlyList<GameEntry> _applications = Array.Empty<GameEntry>();
-    private bool _applicationsSelected;
     private bool _homeSelected;
     private bool _homeHoverLocked;
     private GameEntry? _selectedDetailsGame;
     private bool _lastControllerConnected;
     private string _activeLibraryFilter = "All";
-    private string _activeApplicationFilter = "All";
-    private IReadOnlyList<GameEntry> _applicationResults = Array.Empty<GameEntry>();
-    private int _applicationPage;
-    private const int ApplicationsPerPage = 25;
-    private int _applicationEdgeDirection;
-    private bool _applicationEdgeReady = true;
     private HwndSource? _windowSource;
     private string? _lastHomeSelection;
     private readonly List<IntPtr> _taskThumbnails = new();
@@ -64,8 +60,31 @@ public partial class MainWindow : Window
     private IReadOnlyList<BluetoothDevice> _cachedBluetoothDevices = Array.Empty<BluetoothDevice>();
     private bool _wifiScanInProgress;
     private bool _deviceScanInProgress;
+    private IReadOnlyList<TaskWindowEntry> _winKeyWindows = Array.Empty<TaskWindowEntry>();
+    private IReadOnlyList<TaskWindowEntry> _altTabWindows = Array.Empty<TaskWindowEntry>();
+    private int _altTabIndex;
+    private IntPtr _altTabThumbnail;
+    private readonly List<IntPtr> _altTabStripThumbnails = new();
+    private bool _altTabActive;
+    private IntPtr _previousForegroundWindow;
+    private bool _suppressFocusRestore;
+    private bool _gameCoverHovered;
+    private bool _gameCoverActive;
+    private readonly DispatcherTimer _bgSlideshowTimer = new() { Interval = TimeSpan.FromSeconds(8) };
+    private readonly DispatcherTimer _networkCheckTimer = new() { Interval = TimeSpan.FromSeconds(30) };
+    private DispatcherTimer? _autoRescanTimer;
+    private bool _autoRescanRunning;
+    private bool _lastNetworkAvailable = true;
+    private int _bgSlideshowIndex;
+    private IReadOnlyList<GameEntry> _slideshowGames = Array.Empty<GameEntry>();
     private Button? _mouseFocusedButton;
     private Button? _mouseSuppressedButton;
+    private DependencyObject? _lastMouseMoveSource;
+    private readonly List<string> _backupFolders = new();
+    private bool _automaticBackupEnabled;
+    private string? _backupDriveRoot;
+    private bool _backupInProgress;
+    private static string BackupSettingsPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "OmenGamingShell", "backup-settings.json");
 
     public MainWindow()
     {
@@ -74,6 +93,7 @@ public partial class MainWindow : Window
         _controller.Command += HandleControllerCommand;
         _controller.AcceptHeld += HandleControllerAcceptHeld;
         _controller.StateChanged += UpdateControllerCalibrationDisplay;
+        _controller.StateChanged += UpdateControllerIndicator;
         _controller.GuidePressed += HandleGuideButton;
         _gameSession.StateChanged += HandleGameSessionStateChanged;
         Cursor = Cursors.None;
@@ -87,15 +107,13 @@ public partial class MainWindow : Window
         _coverExitTimer.Tick += (_, _) =>
         {
             _coverExitTimer.Stop();
-            var coverActive = FindVisualChildren<Button>(GamesList)
-                .Any(button => button.IsVisible && (button.IsMouseOver || button.IsKeyboardFocusWithin));
-            if (coverActive) return;
-            HideGameBackground();
-            if (!_applicationsSelected)
-            {
-                QuickLaunchHost.Visibility = Visibility.Visible;
-                PerformanceModeHost.Visibility = Visibility.Visible;
-            }
+            if (_gameCoverActive) return;
+            _gameCoverHovered = false;
+            StartSlideshow();
+            SlideInContainer(ContinueHost);
+            SlideInContainer(PerformanceModeHost);
+            SlideInContainer(MediaControlsBar);
+            SlideInContainer(NotificationsHost);
         };
         _wifiScanTimer.Tick += async (_, _) =>
         {
@@ -105,22 +123,29 @@ public partial class MainWindow : Window
             else
                 _wifiScanTimer.Stop();
         };
-        _deviceScanTimer.Tick += async (_, _) => await RefreshConnectedDevicesAsync();
+        _deviceScanTimer.Tick += async (_, _) => { await RefreshConnectedDevicesAsync(); await RefreshAccessoriesAsync(); };
         _taskViewHotCornerTimer.Tick += (_, _) =>
         {
             _taskViewHotCornerTimer.Stop();
             if (TaskSwitcherOverlay.Visibility != Visibility.Visible) ShowTaskSwitcher();
         };
-        _applicationEdgeTimer.Tick += (_, _) =>
-        {
-            _applicationEdgeTimer.Stop();
-            ChangeApplicationPage(_applicationEdgeDirection);
-        };
+        _bgSlideshowTimer.Tick += (_, _) => AdvanceSlideshow();
+        _networkCheckTimer.Tick += (_, _) => UpdateNetworkStatus();
+        _networkCheckTimer.Start();
+        UpdateNetworkStatus();
+        _autoRescanTimer = new DispatcherTimer { Interval = TimeSpan.FromMinutes(2) };
+        _autoRescanTimer.Tick += async (_, _) => await AutoRescanGamesAsync();
+        _autoRescanTimer.Start();
+        _updateCheckTimer.Tick += async (_, _) => await CheckForUpdateAsync(silent: true);
+        _updateCheckTimer.Start();
+        InitFeatures();
         _clockTimer.Start();
         UpdateClock();
         LoadInputSettings();
+        LoadBackgroundSettings();
         LoadMetadataSettings();
-        LoadGames();
+        _ = LoadGamesAsync();
+        _ = RefreshAccessoriesAsync();
         RefreshErrorLog();
         _ = RefreshConnectedDevicesAsync();
         _deviceScanTimer.Start();
@@ -130,33 +155,322 @@ public partial class MainWindow : Window
             if (_keyboardGuard is null)
             {
                 var windowHandle = new WindowInteropHelper(this).Handle;
+                _controller.SetShellHandle(windowHandle);
                 _keyboardGuard = new ShellKeyboardGuard(windowHandle);
                 _windowSource = HwndSource.FromHwnd(windowHandle);
                 _windowSource?.AddHook(WindowMessageHook);
                 _keyboardGuard.WindowsKeyPressed += () => Dispatcher.BeginInvoke(HandleWindowsKey);
-                _keyboardGuard.AltTabPressed += () => Dispatcher.BeginInvoke(ShowTaskSwitcher);
-                _keyboardGuard.AltReleased += () => Dispatcher.BeginInvoke(ActivateFocusedTaskWindow);
+                _keyboardGuard.AltTabPressed += () => Dispatcher.BeginInvoke(ShowAltTabOverlay);
+                _keyboardGuard.AltTabRepeated += () => Dispatcher.BeginInvoke(CycleAltTabSelection);
+                _keyboardGuard.AltReleased += () => Dispatcher.BeginInvoke(CompleteAltTab);
             }
-            await RunBootAnimationAsync();
-            ShowHomePage();
+            UpdateTaskControllerPrompts();
+            LoadBackupSettings();
+            RefreshBackupDrives();
+            UpdateBackupStatus();
+            // Wait for games to finish loading if not done yet, then display
+            for (var retry = 0; retry < 20 && GamesList.ItemsSource is not IReadOnlyList<GameEntry> { Count: > 0 }; retry++)
+                await Task.Delay(250);
             if (GamesList.ItemsSource is IReadOnlyList<GameEntry> games)
             {
                 await MetadataEnrichmentService.EnrichAsync(games);
                 DisplayGames(games);
                 ShowHomePage();
             }
+            try
+            {
+                var bootTask = RunBootAnimationAsync();
+                var timeout = Task.Delay(4000);
+                await Task.WhenAny(bootTask, timeout);
+            }
+            catch { }
+            LibraryArea.IsHitTestVisible = true;
+            LibraryArea.Opacity = 1;
+            ShellTopStatus.Opacity = 1;
+            GameLibraryHeaderHost.Opacity = 1;
+            OmenBrand.Opacity = 1;
+            BrandTranslation.X = 0;
+            BrandTranslation.Y = 0;
+            BootBrandScale.ScaleX = 1;
+            BootBrandScale.ScaleY = 1;
+            _ = RunStartupUpdateCheckAsync();
         };
     }
 
     private async Task RefreshConnectedDevicesAsync()
     {
-        if (_deviceScanInProgress) return;
-        _deviceScanInProgress = true;
-        try { ConnectedDevicesList.ItemsSource = await Task.Run(ConnectedDeviceScanner.Scan); }
-        catch { ConnectedDevicesList.ItemsSource = Array.Empty<ConnectedDeviceEntry>(); }
-        finally { _deviceScanInProgress = false; }
+        UpdateBackupStatus();
+        RefreshBackupDrives();
+        if (!_automaticBackupEnabled || _backupInProgress || _backupFolders.Count == 0 || string.IsNullOrWhiteSpace(_backupDriveRoot) || !Directory.Exists(_backupDriveRoot)) return;
+        _backupInProgress = true;
+        try { await Task.Run(() => RunBackup(_backupDriveRoot)); }
+        catch { }
+        finally { _backupInProgress = false; }
+        UpdateBackupStatus();
     }
 
+    private void UpdateBackupStatus()
+    {
+        var driveConnected = !string.IsNullOrWhiteSpace(_backupDriveRoot) && Directory.Exists(_backupDriveRoot);
+        var backupMarker = driveConnected ? Path.Combine(_backupDriveRoot!, "Backup", "last-backup.txt") : string.Empty;
+        var backedUp = driveConnected && File.Exists(backupMarker);
+        var setupDone = _backupFolders.Count > 0 && !string.IsNullOrWhiteSpace(_backupDriveRoot);
+        if (!setupDone) SetBackupStatus(null, string.Empty);
+        else if (!driveConnected) SetBackupStatus("DRIVE OFFLINE", "CONNECT THE SELECTED BACKUP DRIVE");
+        else if (_backupInProgress) SetBackupStatus("UPDATING", "SAVING YOUR LATEST CHANGES");
+        else if (backedUp) SetBackupStatus("UPDATED", $"LAST SAVED {File.GetLastWriteTime(backupMarker):dd MMM yyyy HH:mm}".ToUpperInvariant());
+        else SetBackupStatus("PENDING", "FIRST BACKUP HAS NOT RUN YET");
+        BackupLocationText.Text = driveConnected ? "BACKUP DRIVE READY" : "BACKUP DRIVE OFFLINE";
+        BackupSelectedDriveText.Text = string.IsNullOrWhiteSpace(_backupDriveRoot) ? "NO DRIVE SELECTED" : $"SELECTED DRIVE: {_backupDriveRoot}" + (driveConnected ? string.Empty : "  (NOT CONNECTED)");
+        BackupSetupButton.Visibility = setupDone ? Visibility.Collapsed : Visibility.Visible;
+        EjectDriverButton.Visibility = driveConnected && setupDone ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void SetBackupStatus(string? status, string detail)
+    {
+        var hasStatus = !string.IsNullOrEmpty(status);
+        BackupStatusDot.Visibility = hasStatus ? Visibility.Visible : Visibility.Collapsed;
+        BackupStatusText.Visibility = hasStatus ? Visibility.Visible : Visibility.Collapsed;
+        BackupLastRunText.Visibility = hasStatus ? Visibility.Visible : Visibility.Collapsed;
+        BackupStatusText.Text = status ?? string.Empty;
+        BackupLastRunText.Text = detail;
+        BackupStatusDot.Fill = CreateFrozenBrush(status == "UPDATED" ? "#38D878" : status == "DRIVE OFFLINE" ? "#FF003C" : status == "UPDATING" ? "#FFC928" : "#888888");
+    }
+
+    private void BackupSetup_Click(object sender, RoutedEventArgs e) => OpenBackupSettings();
+
+    private async void EjectDriver_Click(object sender, RoutedEventArgs e)
+    {
+        if (string.IsNullOrWhiteSpace(_backupDriveRoot)) return;
+        try
+        {
+            var driveLetter = _backupDriveRoot.TrimEnd('\\', '/');
+            SetBackupStatus("EJECTING", "SAFELY REMOVING THE DRIVE");
+            var success = await Task.Run(() => EjectDrive(driveLetter));
+            if (success)
+            {
+                ShowNotification($"Drive {driveLetter} ejected safely");
+                _backupDriveRoot = null;
+                SaveBackupSettings();
+                RefreshBackupDrives();
+            }
+            else
+            {
+                ShowNotification("Could not eject drive — close any open files and try again");
+            }
+            UpdateBackupStatus();
+        }
+        catch (Exception exception)
+        {
+            ShowNotification($"Eject failed: {exception.Message}");
+            UpdateBackupStatus();
+        }
+    }
+
+    private static bool EjectDrive(string driveLetter)
+    {
+        try
+        {
+            var letter = driveLetter.TrimEnd('\\', '/').Last();
+            var script = $@"Get-Disk | Where-Object {{ $_.Number -eq (Get-Volume -DriveLetter '{letter}' -ErrorAction SilentlyContinue).DiskNumber }} | ForEach-Object {{ $_.IsOffline = $true; $_.OfflineReason = 1 }}";
+            using var process = Process.Start(new ProcessStartInfo("powershell.exe")
+            {
+                UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true,
+                CreateNoWindow = true,
+                Arguments = $"-NoProfile -NonInteractive -Command \"{script}\""
+            });
+            if (process is null) return false;
+            process.WaitForExit(10000);
+            return process.ExitCode == 0;
+        }
+        catch { return false; }
+    }
+
+    private async Task RefreshAccessoriesAsync()
+    {
+        try
+        {
+            var devices = await Task.Run(() => ConnectedDeviceScanner.Scan());
+            Dispatcher.BeginInvoke(() =>
+            {
+                // AccessoriesList removed - items managed by overlay
+                AccessoriesEmptyText.Visibility = devices.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+            });
+        }
+        catch { Dispatcher.BeginInvoke(() => AccessoriesEmptyText.Visibility = Visibility.Visible); }
+    }
+    private sealed class BackupDriveEntry
+    {
+        public string Root { get; init; } = string.Empty;
+        public string DisplayName { get; init; } = string.Empty;
+    }
+
+    private void LoadBackupSettings()
+    {
+                _backupFolders.Clear();
+try
+        {
+            if (!File.Exists(BackupSettingsPath)) return;
+            using var document = JsonDocument.Parse(File.ReadAllText(BackupSettingsPath));
+            if (document.RootElement.TryGetProperty("folders", out var folders))
+                _backupFolders.AddRange(folders.EnumerateArray().Select(item => item.GetString()).Where(item => !string.IsNullOrWhiteSpace(item))!.Distinct(StringComparer.OrdinalIgnoreCase));
+            if (document.RootElement.TryGetProperty("automatic", out var automatic)) _automaticBackupEnabled = automatic.GetBoolean();
+            if (document.RootElement.TryGetProperty("drive", out var drive)) _backupDriveRoot = drive.GetString();
+        }
+        catch { }
+        BackupFoldersList.ItemsSource = _backupFolders;
+        AutomaticBackupToggle.IsChecked = _automaticBackupEnabled;
+    }
+
+    private void SaveBackupSettings()
+    {
+        var folder = Path.GetDirectoryName(BackupSettingsPath)!;
+        Directory.CreateDirectory(folder);
+        var payload = new { folders = _backupFolders, automatic = _automaticBackupEnabled, drive = _backupDriveRoot };
+        File.WriteAllText(BackupSettingsPath, JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }));
+    }
+
+    private void RefreshBackupDrives()
+    {
+        var drives = DriveInfo.GetDrives().Where(drive => drive.IsReady && (drive.DriveType == DriveType.Removable || drive.DriveType == DriveType.Fixed))
+            .Select(drive => new BackupDriveEntry { Root = drive.RootDirectory.FullName, DisplayName = $"{drive.VolumeLabel} ({drive.RootDirectory.FullName.TrimEnd('\\')})" })
+            .OrderBy(entry => entry.Root).ToList();
+        BackupDrivePicker.ItemsSource = drives;
+        BackupDrivePicker.SelectedItem = drives.FirstOrDefault(entry => string.Equals(entry.Root, _backupDriveRoot, StringComparison.OrdinalIgnoreCase));
+        if (BackupDrivePicker.SelectedItem is BackupDriveEntry selected) _backupDriveRoot = selected.Root;
+        UpdateBackupStatus();
+    }
+
+    private void BackupStatus_Click(object sender, MouseButtonEventArgs e)
+    {
+        e.Handled = true;
+        OpenBackupSettings();
+    }
+
+    private void AccessoriesContainer_Click(object sender, MouseButtonEventArgs e)
+    {
+        e.Handled = true;
+        OpenAccessoriesOverlay();
+    }
+
+    private async void OpenAccessoriesOverlay()
+    {
+        AccessoriesOverlay.Visibility = Visibility.Visible;
+        SlideIn(AccessoriesOverlay, 0, 24, 280);
+        try
+        {
+            var devices = await Task.Run(() => ConnectedDeviceScanner.Scan());
+            Dispatcher.BeginInvoke(() => AccessoriesFullList.ItemsSource = devices);
+        }
+        catch { Dispatcher.BeginInvoke(() => AccessoriesFullList.ItemsSource = Array.Empty<ConnectedDeviceEntry>()); }
+    }
+
+    private void CloseAccessoriesOverlay(object sender, RoutedEventArgs e)
+    {
+        AccessoriesOverlay.Visibility = Visibility.Collapsed;
+    }
+
+    private async void RefreshAccessoriesOverlay(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var devices = await Task.Run(() => ConnectedDeviceScanner.Scan());
+            Dispatcher.BeginInvoke(() => AccessoriesFullList.ItemsSource = devices);
+        }
+        catch { }
+    }
+
+    private void OpenBackupSettings()
+    {
+        LoadBackupSettings();
+        RefreshBackupDrives();
+        BackupSettingsOverlay.Visibility = Visibility.Visible;
+        BackupSettingsOverlay.MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
+    }
+
+    private void BackupSettingsOverlay_MouseDown(object sender, MouseButtonEventArgs e)
+    {
+        if (ReferenceEquals(e.OriginalSource, sender)) CloseBackupSettings();
+    }
+
+    private void BackupSettingsPanel_MouseDown(object sender, MouseButtonEventArgs e) => e.Handled = true;
+    private void BackupSettingsBack_Click(object sender, RoutedEventArgs e) => CloseBackupSettings();
+
+    private void CloseBackupSettings()
+    {
+        BackupSettingsOverlay.Visibility = Visibility.Collapsed;
+        SaveBackupSettings();
+        UpdateBackupStatus();
+    }
+
+    private void AddBackupFolder_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new OpenFolderDialog { Title = "Choose a folder to back up", Multiselect = false };
+        if (dialog.ShowDialog(this) != true || _backupFolders.Contains(dialog.FolderName, StringComparer.OrdinalIgnoreCase)) return;
+        _backupFolders.Add(dialog.FolderName);
+        BackupFoldersList.ItemsSource = null;
+        BackupFoldersList.ItemsSource = _backupFolders;
+        SaveBackupSettings();
+    }
+
+    private void RemoveBackupFolder_Click(object sender, RoutedEventArgs e)
+    {
+        if (BackupFoldersList.SelectedItem is not string folder) return;
+        _backupFolders.Remove(folder);
+        BackupFoldersList.ItemsSource = null;
+        BackupFoldersList.ItemsSource = _backupFolders;
+        SaveBackupSettings();
+    }
+
+    private void AutomaticBackupToggle_Click(object sender, RoutedEventArgs e)
+    {
+        _automaticBackupEnabled = AutomaticBackupToggle.IsChecked == true;
+        SaveBackupSettings();
+        BackupSettingsMessage.Text = _automaticBackupEnabled ? "AUTOMATIC BACKUP ENABLED" : "AUTOMATIC BACKUP DISABLED";
+    }
+
+    private void BackupDrivePicker_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (BackupDrivePicker.SelectedItem is BackupDriveEntry drive)
+        {
+            _backupDriveRoot = drive.Root;
+            SaveBackupSettings();
+        }
+    }
+
+    private async void BackupNow_Click(object sender, RoutedEventArgs e)
+    {
+        if (_backupFolders.Count == 0) { BackupSettingsMessage.Text = "ADD AT LEAST ONE FOLDER FIRST"; return; }
+        if (string.IsNullOrWhiteSpace(_backupDriveRoot) || !Directory.Exists(_backupDriveRoot)) { BackupSettingsMessage.Text = "CONNECT AND SELECT A BACKUP DRIVE"; return; }
+        BackupSettingsMessage.Text = "BACKING UP...";
+        SetBackupStatus("UPDATING", "COPYING SELECTED FOLDERS");
+        try
+        {
+            await Task.Run(() => RunBackup(_backupDriveRoot));
+            BackupSettingsMessage.Text = "BACKUP COMPLETE";
+            UpdateBackupStatus();
+        }
+        catch (Exception exception) { BackupSettingsMessage.Text = $"BACKUP FAILED: {exception.Message}"; }
+    }
+
+    private void RunBackup(string driveRoot)
+    {
+        var destination = Path.Combine(driveRoot, "Backup");
+        Directory.CreateDirectory(destination);
+        foreach (var source in _backupFolders.Where(Directory.Exists))
+        {
+            var target = Path.Combine(destination, new DirectoryInfo(source).Name);
+            CopyDirectory(source, target);
+        }
+        File.WriteAllText(Path.Combine(destination, "last-backup.txt"), DateTime.UtcNow.ToString("O"));
+    }
+
+    private static void CopyDirectory(string source, string target)
+    {
+        Directory.CreateDirectory(target);
+        foreach (var file in Directory.EnumerateFiles(source)) File.Copy(file, Path.Combine(target, Path.GetFileName(file)), true);
+        foreach (var directory in Directory.EnumerateDirectories(source)) CopyDirectory(directory, Path.Combine(target, Path.GetFileName(directory)));
+    }
     private void ErrorLog_Click(object sender, RoutedEventArgs e)
     {
         e.Handled = true;
@@ -164,6 +478,7 @@ public partial class MainWindow : Window
         if (SettingsOverlay.Visibility == Visibility.Visible) CloseSettings();
         RefreshErrorLog();
         ErrorLogOverlay.Visibility = Visibility.Visible;
+        SlideIn(ErrorLogOverlay, 0, 24, 280);
         ErrorLogOverlay.UpdateLayout();
         ErrorLogButton.Tag = "OverlayOpen";
         Keyboard.Focus(NewErrorText);
@@ -171,9 +486,9 @@ public partial class MainWindow : Window
 
     private void CloseErrorLog_Click(object sender, RoutedEventArgs e) => CloseErrorLog();
 
-    private void CloseErrorLog()
+    private async void CloseErrorLog()
     {
-        ErrorLogOverlay.Visibility = Visibility.Collapsed;
+        await AnimateOutAsync(ErrorLogOverlay, 0, 18, 180);
         ErrorLogButton.Tag = null;
         NewErrorText.Clear();
     }
@@ -227,17 +542,16 @@ public partial class MainWindow : Window
         await AnimateAsync(OmenBrand, UIElement.OpacityProperty, 0, 1, 450);
         await Task.Delay(700);
 
-        var easing = new CubicEase { EasingMode = EasingMode.EaseInOut };
+        var easing = new CubicEase { EasingMode = EasingMode.EaseOut };
         var moveX = AnimateAsync(BrandTranslation, TranslateTransform.XProperty,
-            BrandTranslation.X, 0, 1500, easing);
+            BrandTranslation.X, 0, 1200, easing);
         var moveY = AnimateAsync(BrandTranslation, TranslateTransform.YProperty,
-            BrandTranslation.Y, 0, 1500, easing);
-        var scaleX = AnimateAsync(BootBrandScale, ScaleTransform.ScaleXProperty, 1.8, 1, 1500, easing);
-        var scaleY = AnimateAsync(BootBrandScale, ScaleTransform.ScaleYProperty, 1.8, 1, 1500, easing);
-        await Task.Delay(800);
+            BrandTranslation.Y, 0, 1200, easing);
+        var scaleX = AnimateAsync(BootBrandScale, ScaleTransform.ScaleXProperty, 1.8, 1, 1200, easing);
+        var scaleY = AnimateAsync(BootBrandScale, ScaleTransform.ScaleYProperty, 1.8, 1, 1200, easing);
+        await Task.Delay(600);
         var reveal = Task.WhenAll(
             AnimateAsync(GameLibraryHeaderHost, UIElement.OpacityProperty, 0, 1, 700),
-            AnimateAsync(ApplicationsHeader, UIElement.OpacityProperty, 0, 1, 700),
             AnimateAsync(ShellTopStatus, UIElement.OpacityProperty, 0, 1, 700),
             AnimateAsync(LibraryArea, UIElement.OpacityProperty, 0, 1, 700),
             AnimateAsync(ShellControls, UIElement.OpacityProperty, 0, 1, 700));
@@ -252,11 +566,29 @@ public partial class MainWindow : Window
         var animation = new DoubleAnimation(from, to, TimeSpan.FromMilliseconds(milliseconds))
         {
             EasingFunction = easing,
-            FillBehavior = FillBehavior.Stop
+            FillBehavior = FillBehavior.HoldEnd
         };
+        // When the animation ends we MUST drop its clock (BeginAnimation(null)) so the
+        // animated value no longer overrides the property. Otherwise a held value (e.g. a
+        // grid slid off-screen, or opacity faded to 0) sticks forever and later direct
+        // assignments like transform.X = 0 / Opacity = 1 are silently ignored — leaving
+        // the game/app grid invisible after it has slid out once.
+        void Settle()
+        {
+            switch (target)
+            {
+                case UIElement uiTarget:
+                    uiTarget.BeginAnimation(property, null);
+                    break;
+                case Animatable animatable:
+                    animatable.BeginAnimation(property, null);
+                    break;
+            }
+            target.SetValue(property, to);
+        }
         animation.Completed += (_, _) =>
         {
-            target.SetValue(property, to);
+            Settle();
             completion.TrySetResult();
         };
         if (target is UIElement element)
@@ -264,9 +596,67 @@ public partial class MainWindow : Window
         else if (target is Animatable animatable)
             animatable.BeginAnimation(property, animation);
         else
-            throw new InvalidOperationException("The animation target is not animatable.");
+        {
+            completion.TrySetResult();
+            return Task.CompletedTask;
+        }
+        _ = Task.Delay(milliseconds + 200).ContinueWith(_ =>
+        {
+            Settle();
+            completion.TrySetResult();
+        });
         return completion.Task;
     }
+
+    private static async Task AnimateInAsync(UIElement element, double fromX = 0, double fromY = 0,
+        int milliseconds = 300)
+    {
+        var transform = element.RenderTransform as TranslateTransform;
+        if (transform is null)
+        {
+            transform = new TranslateTransform();
+            element.RenderTransform = transform;
+        }
+        element.Visibility = Visibility.Visible;
+        element.IsHitTestVisible = false;
+        element.Opacity = 0;
+        transform.X = fromX;
+        transform.Y = fromY;
+        var easing = new CubicEase { EasingMode = EasingMode.EaseOut };
+        await Task.WhenAll(
+            AnimateAsync(element, UIElement.OpacityProperty, 0, 1, milliseconds, easing),
+            AnimateAsync(transform, TranslateTransform.XProperty, fromX, 0, milliseconds, easing),
+            AnimateAsync(transform, TranslateTransform.YProperty, fromY, 0, milliseconds, easing));
+        element.IsHitTestVisible = true;
+    }
+
+    private static async Task AnimateOutAsync(UIElement element, double toX = 0, double toY = 0,
+        int milliseconds = 210)
+    {
+        if (element.Visibility != Visibility.Visible) return;
+        var transform = element.RenderTransform as TranslateTransform;
+        if (transform is null)
+        {
+            transform = new TranslateTransform();
+            element.RenderTransform = transform;
+        }
+        element.IsHitTestVisible = false;
+        var easing = new CubicEase { EasingMode = EasingMode.EaseIn };
+        await Task.WhenAll(
+            AnimateAsync(element, UIElement.OpacityProperty, element.Opacity, 0, milliseconds, easing),
+            AnimateAsync(transform, TranslateTransform.XProperty, transform.X, toX, milliseconds, easing),
+            AnimateAsync(transform, TranslateTransform.YProperty, transform.Y, toY, milliseconds, easing));
+        element.Visibility = Visibility.Collapsed;
+        element.Opacity = 1;
+        transform.X = 0;
+        transform.Y = 0;
+    }
+
+    private static void SlideIn(UIElement element, double fromX = 0, double fromY = 0, int milliseconds = 300) =>
+        _ = AnimateInAsync(element, fromX, fromY, milliseconds);
+
+    private static void SlideOut(UIElement element, double toX = 0, double toY = 0, int milliseconds = 210) =>
+        _ = AnimateOutAsync(element, toX, toY, milliseconds);
 
     private void Window_PreviewMouseMove(object sender, MouseEventArgs e)
     {
@@ -286,19 +676,6 @@ public partial class MainWindow : Window
         {
             _taskViewHotCornerTimer.Stop();
         }
-        var atLeftApplicationEdge = _applicationsSelected && windowPoint.X <= 10 && windowPoint.Y > 20;
-        var atRightApplicationEdge = _applicationsSelected && windowPoint.X >= Math.Max(0, ActualWidth - 10) && windowPoint.Y > 20;
-        if ((atLeftApplicationEdge || atRightApplicationEdge) && _applicationEdgeReady)
-        {
-            _applicationEdgeDirection = atRightApplicationEdge ? 1 : -1;
-            _applicationEdgeReady = false;
-            _applicationEdgeTimer.Start();
-        }
-        else if (!atLeftApplicationEdge && !atRightApplicationEdge)
-        {
-            _applicationEdgeTimer.Stop();
-            _applicationEdgeReady = true;
-        }
         if (_homeHoverLocked)
         {
             var point = e.GetPosition(GamesList);
@@ -309,7 +686,8 @@ public partial class MainWindow : Window
             }
             return;
         }
-        var button = FindAncestor<Button>(e.OriginalSource as DependencyObject);
+        var button = ReferenceEquals(e.OriginalSource, _lastMouseMoveSource) ? _mouseFocusedButton : FindAncestor<Button>(e.OriginalSource as DependencyObject);
+        _lastMouseMoveSource = e.OriginalSource as DependencyObject;
         if (button is { IsEnabled: true })
         {
             if (!ReferenceEquals(_mouseFocusedButton, button))
@@ -350,19 +728,47 @@ public partial class MainWindow : Window
         _cursorHideTimer.Start();
     }
 
-    private void LoadGames()
+    private async Task LoadGamesAsync()
     {
         try
         {
-            var games = GameLibrary.Load();
-            _applications = FilterGameShortcuts(ApplicationScanner.Scan(), games);
-            RefreshQuickLaunchItems();
-            DisplayGames(games);
+            var games = await Task.Run(() => GameLibrary.Load());
+            Dispatcher.BeginInvoke(() => DisplayGames(games));
         }
         catch (Exception exception)
         {
-            EmptyLibrary.Visibility = Visibility.Visible;
-            StatusText.Text = exception.Message.ToUpperInvariant();
+            Dispatcher.BeginInvoke(() =>
+            {
+                EmptyLibrary.Visibility = Visibility.Visible;
+                StatusText.Text = exception.Message.ToUpperInvariant();
+            });
+        }
+    }
+
+    private async Task AutoRescanGamesAsync()
+    {
+        if (_autoRescanRunning || LibraryArea.Opacity < 1) return;
+        _autoRescanRunning = true;
+        try
+        {
+            var knownGames = _allGames.Select(game => game.Target).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var games = await Task.Run(() => GameLibrary.Load());
+            var newGames = games.Where(game => !knownGames.Contains(game.Target)).ToList();
+            if (newGames.Count == 0) return;
+
+            await MetadataEnrichmentService.EnrichAsync(newGames);
+            if (LibraryArea.Opacity < 1) return;
+
+            _allGames = games;
+            DisplayGames(games);
+            ShowNotification($"{newGames.Count} new game{(newGames.Count == 1 ? string.Empty : "s")} detected");
+        }
+        catch
+        {
+        }
+        finally
+        {
+            _autoRescanRunning = false;
         }
     }
 
@@ -375,14 +781,7 @@ public partial class MainWindow : Window
         PopulateLibraryFilters();
         SetEmptyLibrary(visibleGames.Count == 0, "NO GAMES FOUND", "Refresh the library to scan again.");
         StatusText.Text = _homeSelected ? "HOME" : visibleGames.Count == 1 ? "1 GAME READY" : $"{visibleGames.Count} GAMES READY";
-    }
-
-    private static IReadOnlyList<GameEntry> FilterGameShortcuts(IReadOnlyList<GameEntry> applications, IReadOnlyList<GameEntry> games)
-    {
-        static string Normalize(string value) => Regex.Replace(value, @"[^a-z0-9]", string.Empty, RegexOptions.IgnoreCase).ToLowerInvariant();
-        var gameNames = games.Select(game => Normalize(game.Name)).Where(name => name.Length > 2).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var gameTargets = games.Select(game => game.Target).Where(target => !string.IsNullOrWhiteSpace(target)).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        return applications.Where(app => !gameTargets.Contains(app.Target) && !gameNames.Contains(Normalize(app.Name))).ToList();
+        InitSlideshow();
     }
 
     private void UpdateClock()
@@ -393,13 +792,26 @@ public partial class MainWindow : Window
         UpdateBattery();
     }
 
+    private void UpdateNetworkStatus()
+    {
+        try
+        {
+            var available = NetworkInterface.GetIsNetworkAvailable();
+            if (available != _lastNetworkAvailable)
+            {
+                _lastNetworkAvailable = available;
+                WifiStatusIcon.Opacity = available ? 1 : 0.35;
+            }
+        }
+        catch { }
+    }
+
     private void UpdateBattery()
     {
         if (!GetSystemPowerStatus(out var status) || status.BatteryLifePercent == byte.MaxValue)
         {
             BatteryFill.Width = 0;
             ChargingIcon.Visibility = Visibility.Collapsed;
-            WifiStatusIcon.Opacity = NetworkInterface.GetIsNetworkAvailable() ? 1 : 0.35;
             return;
         }
 
@@ -409,7 +821,6 @@ public partial class MainWindow : Window
             ? BatteryGreen
             : percentage > 20 ? BatteryYellow : BatteryRed;
         ChargingIcon.Visibility = status.AcLineStatus == 1 ? Visibility.Visible : Visibility.Collapsed;
-        WifiStatusIcon.Opacity = NetworkInterface.GetIsNetworkAvailable() ? 1 : 0.35;
     }
 
     private static Brush CreateFrozenBrush(string color)
@@ -443,17 +854,38 @@ public partial class MainWindow : Window
             return;
         }
 
+        OpenGameDetails(game);
+    }
+
+    private void OpenGameDetails(GameEntry game)
+    {
         _selectedDetailsGame = game;
         GameDetailsPage.DataContext = game;
         HideGameBackground();
         GameDetailsPage.Visibility = Visibility.Visible;
+        SlideIn(GameDetailsPage, 70, 0, 340);
         LaunchDetailsButton.Focus();
+    }
+
+    private void DashNotification_Click(object sender, MouseButtonEventArgs e)
+    {
+        if (TaskSwitcherOverlay.Visibility == Visibility.Visible)
+        {
+            CloseTaskSwitcher();
+            Show();
+            WindowState = WindowState.Maximized;
+            Activate();
+            Topmost = true;
+            Dispatcher.BeginInvoke(() => Topmost = false, DispatcherPriority.ApplicationIdle);
+        }
+        PopulateNotifications();
+        NotificationCenterOverlay.Visibility = Visibility.Visible;
     }
 
     private void ContinueGame_Click(object sender, RoutedEventArgs e)
     {
         _lastHomeSelection = "Continue";
-        if (ContinuePlayingPanel.DataContext is GameEntry game) LaunchGame(game);
+        if (ContinueHost.DataContext is GameEntry { IsApplication: false } game) OpenGameDetails(game);
     }
 
     private void QuickLaunch_Click(object sender, RoutedEventArgs e)
@@ -461,15 +893,6 @@ public partial class MainWindow : Window
         if (sender is not Button { Tag: GameEntry application }) return;
         _lastHomeSelection = application.Name;
         LaunchApplication(application);
-    }
-
-    private void RefreshQuickLaunchItems()
-    {
-        var pins = QuickLaunchUsageStore.LoadPins();
-        QuickLaunchList.ItemsSource = _applications
-            .Where(app => pins.Contains(app.Target))
-            .OrderBy(app => app.Name, StringComparer.OrdinalIgnoreCase)
-            .Take(9).ToList();
     }
 
     private void LaunchApplication(GameEntry application)
@@ -510,173 +933,9 @@ public partial class MainWindow : Window
         }
     }
 
-    private void QuickLaunchContextMenu_Opened(object sender, RoutedEventArgs e)
-    {
-        if (sender is not ContextMenu menu) return;
-        var application = (menu.PlacementTarget as FrameworkElement)?.Tag as GameEntry;
-        if (application is null) return;
-        var pinned = QuickLaunchUsageStore.LoadPins().Contains(application.Target);
-        foreach (var item in menu.Items.OfType<MenuItem>())
-        {
-            if (item.Header is not string header || !header.EndsWith("QUICK LAUNCH")) continue;
-            var isUnpin = header.StartsWith("UNPIN");
-            item.Visibility = isUnpin == pinned ? Visibility.Visible : Visibility.Collapsed;
-        }
-    }
-
-    private void PinApplication_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is not MenuItem { Tag: GameEntry { IsApplication: true } application }) return;
-        QuickLaunchUsageStore.Pin(application.Target);
-        RefreshQuickLaunchItems();
-        ShowNotification($"{application.Name} pinned to Quick Launch");
-    }
-
-    private void UnpinApplication_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is not MenuItem { Tag: GameEntry { IsApplication: true } application }) return;
-        QuickLaunchUsageStore.Unpin(application.Target);
-        RefreshQuickLaunchItems();
-        ShowNotification($"{application.Name} removed from Quick Launch");
-    }
-
-    private void ApplicationMenuVisibility_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is not MenuItem { Tag: GameEntry { IsApplication: true } application }) return;
-        var visible = !application.IsInApplicationMenu;
-        ApplicationMenuStore.SetVisible(application, visible);
-        if (string.IsNullOrWhiteSpace(GameSearchBox.Text)) ApplyApplicationFilter();
-        else GameSearchBox_TextChanged(GameSearchBox, new TextChangedEventArgs(TextBox.TextChangedEvent, UndoAction.None));
-        ShowNotification(visible ? $"{application.Name} added to Applications" : $"{application.Name} removed from Applications");
-    }
-
-    private void ApplicationFilter_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is Button { Tag: string filter }) _activeApplicationFilter = filter;
-        ApplyApplicationFilter();
-    }
-
-    private void ApplyApplicationFilter()
-    {
-        if (!_applicationsSelected) return;
-        UpdateApplicationRunningStates();
-        var apps = ApplicationPageSource(_activeApplicationFilter)
-            .OrderByDescending(app => app.IsRunning).ThenBy(app => app.Name, StringComparer.OrdinalIgnoreCase).ToList();
-        SetApplicationResults(apps);
-        SetEmptyLibrary(apps.Count == 0, $"NO {_activeApplicationFilter.ToUpperInvariant()} APPLICATIONS", "Choose another application category.");
-        StatusText.Text = $"{apps.Count} APPLICATIONS SHOWN";
-    }
-
-    private void SetApplicationResults(IReadOnlyList<GameEntry> apps)
-    {
-        _applicationResults = apps;
-        _applicationPage = 0;
-        UpdateApplicationPage();
-    }
-
-    private void UpdateApplicationPage()
-    {
-        var pageCount = Math.Max(1, (int)Math.Ceiling(_applicationResults.Count / (double)ApplicationsPerPage));
-        _applicationPage = Math.Clamp(_applicationPage, 0, pageCount - 1);
-        ApplicationList.ItemsSource = _applicationResults.Skip(_applicationPage * ApplicationsPerPage)
-            .Take(ApplicationsPerPage).ToList();
-        ApplicationPageDots.ItemsSource = Enumerable.Range(0, pageCount)
-            .Select(index => new ApplicationPageDot(index,
-                CreateFrozenBrush(index == _applicationPage ? "#B33A44" : "#55FFFFFF"),
-                $"Applications page {index + 1}")).ToList();
-    }
-
-    private void PreviousApplicationPage_Click(object sender, RoutedEventArgs e)
-    {
-        if (_applicationPage <= 0) return;
-        _applicationPage--;
-        UpdateApplicationPage();
-    }
-
-    private void NextApplicationPage_Click(object sender, RoutedEventArgs e)
-    {
-        if ((_applicationPage + 1) * ApplicationsPerPage >= _applicationResults.Count) return;
-        _applicationPage++;
-        UpdateApplicationPage();
-    }
-
-    private void ApplicationPageDot_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is not Button { Tag: int page }) return;
-        _applicationPage = page;
-        UpdateApplicationPage();
-    }
-
-    private void ChangeApplicationPage(int direction)
-    {
-        if (!_applicationsSelected || direction == 0) return;
-        var pageCount = Math.Max(1, (int)Math.Ceiling(_applicationResults.Count / (double)ApplicationsPerPage));
-        var next = _applicationPage + direction;
-        if (next < 0 || next >= pageCount) return;
-        _applicationPage = next;
-        UpdateApplicationPage();
-    }
-
     private IntPtr WindowMessageHook(IntPtr window, int message, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
-        const int WmMouseHWheel = 0x020E;
-        if (message != WmMouseHWheel || !_applicationsSelected) return IntPtr.Zero;
-        var delta = unchecked((short)((wParam.ToInt64() >> 16) & 0xFFFF));
-        ChangeApplicationPage(delta > 0 ? 1 : -1);
-        handled = true;
         return IntPtr.Zero;
-    }
-
-    private sealed record ApplicationPageDot(int Index, Brush Fill, string AccessibleName);
-
-    private IEnumerable<GameEntry> ApplicationPageSource(string filter, bool includeMenuHidden = false)
-    {
-        var availableApplications = includeMenuHidden ? _applications : _applications.Where(app => app.IsInApplicationMenu).ToList();
-        if (!filter.Equals("Games", StringComparison.OrdinalIgnoreCase))
-            return filter == "All" ? availableApplications : availableApplications.Where(app =>
-                app.ApplicationCategory.Equals(filter, StringComparison.OrdinalIgnoreCase));
-
-        var launchers = availableApplications.Where(app => app.ApplicationCategory.Equals("Games", StringComparison.OrdinalIgnoreCase));
-        var games = _allGames.Where(game => !game.IsHidden).Select(game => new GameEntry
-        {
-            Name = game.Name, Target = game.Target, Arguments = game.Arguments,
-            WorkingDirectory = game.WorkingDirectory, Source = game.Source, IsApplication = true,
-            ApplicationCategory = "Games", ApplicationIconPath = ResolveGameApplicationIcon(game)
-        });
-        return launchers.Concat(games).GroupBy(item => item.Name, StringComparer.OrdinalIgnoreCase).Select(group => group.First());
-    }
-
-    private static string ResolveGameApplicationIcon(GameEntry game)
-    {
-        if (File.Exists(game.Target)) return game.Target;
-        if (!string.IsNullOrWhiteSpace(game.WorkingDirectory) && Directory.Exists(game.WorkingDirectory))
-        {
-            try
-            {
-                var normalizedName = Regex.Replace(game.Name, @"[^a-z0-9]", string.Empty, RegexOptions.IgnoreCase);
-                var executable = Directory.EnumerateFiles(game.WorkingDirectory, "*.exe", SearchOption.AllDirectories)
-                    .Take(400)
-                    .Where(path => !Regex.IsMatch(Path.GetFileName(path), "unins|crash|report|setup|redist|launcher|helper", RegexOptions.IgnoreCase))
-                    .OrderByDescending(path => Regex.Replace(Path.GetFileNameWithoutExtension(path), @"[^a-z0-9]", string.Empty, RegexOptions.IgnoreCase)
-                        .Contains(normalizedName, StringComparison.OrdinalIgnoreCase))
-                    .ThenByDescending(path => new FileInfo(path).Length)
-                    .FirstOrDefault();
-                if (!string.IsNullOrWhiteSpace(executable)) return executable;
-            }
-            catch { }
-        }
-        return game.Cover ?? game.Target;
-    }
-
-    private void UpdateApplicationRunningStates()
-    {
-        var runningNames = Process.GetProcesses().Select(process => process.ProcessName).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        foreach (var app in _applications)
-        {
-            var (target, _) = ResolveShortcutLaunch(app.Target);
-            app.IsRunning = target.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) &&
-                            runningNames.Contains(Path.GetFileNameWithoutExtension(target));
-        }
     }
 
     private static readonly object ShortcutResolveSync = new();
@@ -787,7 +1046,7 @@ public partial class MainWindow : Window
 
     private void ApplyLibraryFilters()
     {
-        if (_homeSelected || _applicationsSelected) return;
+        if (_homeSelected) return;
         IEnumerable<GameEntry> games = _allGames;
         games = _activeLibraryFilter switch
         {
@@ -833,6 +1092,68 @@ public partial class MainWindow : Window
         _notificationTimer.Start();
     }
 
+    private string CurrentAppVersion => Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "0.0.0";
+
+    private async Task RunStartupUpdateCheckAsync()
+    {
+        await Task.Delay(TimeSpan.FromSeconds(12));
+        await CheckForUpdateAsync(silent: true);
+    }
+
+    private async Task CheckForUpdateAsync(bool silent)
+    {
+        if (_updateCheckInProgress || UpdateOverlay.Visibility == Visibility.Visible) return;
+        _updateCheckInProgress = true;
+        try
+        {
+            var release = await UpdateChecker.FetchLatestReleaseAsync();
+            if (release is null) return;
+            if (!UpdateChecker.IsUpdateAvailable(CurrentAppVersion, release)) return;
+            _pendingRelease = release;
+            ShowNotification($"Update available: v{release.Version}");
+            await Task.Delay(TimeSpan.FromSeconds(1.5));
+            ShowUpdatePrompt(release);
+        }
+        catch (Exception exception)
+        {
+            if (!silent) ShowNotification("Update check failed");
+            ErrorLogStore.Log(exception.Message, "Update check", exception.ToString());
+        }
+        finally
+        {
+            _updateCheckInProgress = false;
+        }
+    }
+
+    private void ShowUpdatePrompt(UpdateReleaseInfo release)
+    {
+        UpdateVersionText.Text = $"OMEN Gaming Shell v{release.Version} is available (you are on v{CurrentAppVersion})";
+        UpdateNotesText.Text = string.IsNullOrWhiteSpace(release.Notes) ? "Contains fixes and improvements." : release.Notes;
+        UpdateOverlay.Visibility = Visibility.Visible;
+    }
+
+    private void UpdateLater_Click(object sender, RoutedEventArgs e)
+    {
+        UpdateOverlay.Visibility = Visibility.Collapsed;
+        _pendingRelease = null;
+    }
+
+    private async void UpdateNow_Click(object sender, RoutedEventArgs e)
+    {
+        UpdateOverlay.Visibility = Visibility.Collapsed;
+        var release = _pendingRelease;
+        _pendingRelease = null;
+        if (release is null) return;
+        ShowNotification("Downloading update...");
+        var ready = await UpdateChecker.DownloadAndApplyAsync(release);
+        if (!ready)
+        {
+            ShowNotification("Update failed. Try again later");
+            return;
+        }
+        Application.Current.Shutdown();
+    }
+
     private void UpdateContinuePlaying()
     {
         var game = _allGames
@@ -840,33 +1161,56 @@ public partial class MainWindow : Window
             .OrderByDescending(entry => entry.LastPlayedUtc)
             .FirstOrDefault();
 
-        ContinuePlayingPanel.DataContext = game;
-        ContinuePlayingPanel.Visibility = _homeSelected && game is not null
-            ? Visibility.Visible
-            : Visibility.Collapsed;
+        ContinueHost.DataContext = game;
+
         if (game is null)
         {
-            ContinueCoverBrush.ImageSource = null;
+            UpdateDashContinue(null, null);
+            if (_homeSelected)
+            {
+                ContinueHost.Visibility = Visibility.Visible;
+                ContinueContent.Visibility = Visibility.Collapsed;
+                ContinueWelcomeText.Visibility = Visibility.Visible;
+                ContinueCoverBrush.ImageSource = null;
+            }
+            else
+            {
+                ContinueHost.Visibility = Visibility.Collapsed;
+            }
             return;
         }
 
+        ContinueContent.Visibility = Visibility.Visible;
+        ContinueWelcomeText.Visibility = Visibility.Collapsed;
+        ContinueHost.Visibility = _homeSelected ? Visibility.Visible : Visibility.Collapsed;
         ContinueGameName.Text = game.Name.ToUpperInvariant();
-        ContinuePlayTime.Text = $"{FormatPlayTime(TimeSpan.FromSeconds(game.TotalPlayTimeSeconds))} PLAYED";
-        ContinueLastPlayed.Text = FormatLastPlayed(game.LastPlayedUtc!.Value);
         ContinueCoverBrush.ImageSource = LoadLocalImage(game.Cover);
+        UpdateDashContinue(game.Name, LoadLocalImage(game.Cover));
     }
 
-    private static string FormatLastPlayed(DateTime utc)
+    private void UpdateDashContinue(string? name, ImageSource? art)
     {
-        var local = utc.ToLocalTime();
-        var days = (DateTime.Today - local.Date).Days;
-        return days switch
-        {
-            0 => "PLAYED TODAY",
-            1 => "PLAYED YESTERDAY",
-            _ when days > 1 && days < 7 => $"PLAYED {days} DAYS AGO",
-            _ => $"LAST PLAYED {local:dd MMM yyyy}".ToUpperInvariant()
-        };
+        if (DashContinueName is null) return;
+        DashContinueName.Text = string.IsNullOrEmpty(name) ? "Nothing to resume" : name;
+        DashContinueArtInner.Background = art is not null
+            ? new ImageBrush(art)
+            : new SolidColorBrush((Color)ColorConverter.ConvertFromString("#10FFFFFF"));
+    }
+
+    private void DashContinue_Click(object sender, MouseButtonEventArgs e)
+    {
+        var game = _allGames
+            .Where(entry => !entry.IsApplication && !entry.IsHidden && entry.LastPlayedUtc.HasValue)
+            .OrderByDescending(entry => entry.LastPlayedUtc)
+            .FirstOrDefault();
+        if (game is null) return;
+        CloseTaskSwitcher();
+        Show();
+        WindowState = WindowState.Maximized;
+        Activate();
+        Topmost = true;
+        Dispatcher.BeginInvoke(() => Topmost = false, DispatcherPriority.ApplicationIdle);
+        OpenGameDetails(game);
     }
 
     private static ImageSource? LoadLocalImage(string? path)
@@ -883,9 +1227,9 @@ public partial class MainWindow : Window
 
     private void DetailsBack_Click(object sender, RoutedEventArgs e) => CloseGameDetails();
 
-    private void CloseGameDetails()
+    private async void CloseGameDetails()
     {
-        GameDetailsPage.Visibility = Visibility.Collapsed;
+        await AnimateOutAsync(GameDetailsPage, 70, 0, 220);
         GameDetailsPage.DataContext = null;
         _selectedDetailsGame = null;
         MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
@@ -959,6 +1303,7 @@ public partial class MainWindow : Window
         _pendingCorrectedCover = _selectedDetailsGame.Cover;
         _pendingCorrectedBackground = _selectedDetailsGame.Background;
         MetadataCorrectionOverlay.Visibility = Visibility.Visible;
+        SlideIn(MetadataCorrectionOverlay, 0, 22, 260);
         EditGameName.Focus();
     }
 
@@ -987,7 +1332,7 @@ public partial class MainWindow : Window
         _selectedDetailsGame.Platforms = EditPlatforms.Text.Trim(); _selectedDetailsGame.Description = EditDescription.Text.Trim();
         _selectedDetailsGame.Cover = _pendingCorrectedCover; _selectedDetailsGame.Background = _pendingCorrectedBackground;
         MetadataOverrideStore.Save(_selectedDetailsGame);
-        MetadataCorrectionOverlay.Visibility = Visibility.Collapsed;
+        SlideOut(MetadataCorrectionOverlay, 0, 18, 170);
         GameDetailsPage.DataContext = null; GameDetailsPage.DataContext = _selectedDetailsGame;
         GamesList.Items.Refresh();
         StatusText.Text = "GAME METADATA SAVED";
@@ -996,7 +1341,7 @@ public partial class MainWindow : Window
 
     private void CancelMetadataCorrection_Click(object sender, RoutedEventArgs e)
     {
-        MetadataCorrectionOverlay.Visibility = Visibility.Collapsed;
+        SlideOut(MetadataCorrectionOverlay, 0, 18, 170);
         LaunchDetailsButton.Focus();
     }
 
@@ -1059,15 +1404,87 @@ public partial class MainWindow : Window
     private void Game_MouseEnter(object sender, MouseEventArgs e)
     {
         _coverExitTimer.Stop();
+        _gameCoverActive = true;
         ActivateGameLibraryFromHome();
-        QuickLaunchHost.Visibility = Visibility.Collapsed;
-        PerformanceModeHost.Visibility = Visibility.Collapsed;
+        
+        SlideOutContainer(PerformanceModeHost, 200);
+        SlideOutContainer(MediaControlsBar, 200);
+        SlideOutContainer(ContinueHost, 200);
+        SlideOutContainer(NotificationsHost, 200);
         ShowGameBackground(sender);
+    }
+
+    private static void SlideOutContainer(UIElement element, int milliseconds = 200)
+    {
+        if (element.Visibility != Visibility.Visible) return;
+        var transform = element.RenderTransform as TranslateTransform;
+        if (transform is null)
+        {
+            transform = new TranslateTransform();
+            element.RenderTransform = transform;
+        }
+        var easing = new CubicEase { EasingMode = EasingMode.EaseIn };
+        var animX = new DoubleAnimation(0, 250, TimeSpan.FromMilliseconds(milliseconds))
+        {
+            EasingFunction = easing, FillBehavior = FillBehavior.HoldEnd
+        };
+        var animOpacity = new DoubleAnimation(1, 0, TimeSpan.FromMilliseconds(milliseconds))
+        {
+            EasingFunction = easing, FillBehavior = FillBehavior.HoldEnd
+        };
+        animX.Completed += (_, _) =>
+        {
+            element.BeginAnimation(TranslateTransform.XProperty, null);
+            transform.X = 0;
+            element.Visibility = Visibility.Collapsed;
+        };
+        animOpacity.Completed += (_, _) =>
+        {
+            element.BeginAnimation(UIElement.OpacityProperty, null);
+            element.Opacity = 1;
+        };
+        element.BeginAnimation(UIElement.OpacityProperty, animOpacity);
+        transform.BeginAnimation(TranslateTransform.XProperty, animX);
+    }
+
+    private static void SlideInContainer(UIElement element, int milliseconds = 250)
+    {
+        var transform = element.RenderTransform as TranslateTransform;
+        if (transform is null)
+        {
+            transform = new TranslateTransform();
+            element.RenderTransform = transform;
+        }
+        element.Visibility = Visibility.Visible;
+        element.Opacity = 0;
+        transform.X = 200;
+        var easing = new CubicEase { EasingMode = EasingMode.EaseOut };
+        var animX = new DoubleAnimation(200, 0, TimeSpan.FromMilliseconds(milliseconds))
+        {
+            EasingFunction = easing, FillBehavior = FillBehavior.HoldEnd
+        };
+        var animOpacity = new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(milliseconds))
+        {
+            EasingFunction = easing, FillBehavior = FillBehavior.HoldEnd
+        };
+        animOpacity.Completed += (_, _) =>
+        {
+            element.BeginAnimation(UIElement.OpacityProperty, null);
+            element.Opacity = 1;
+        };
+        animX.Completed += (_, _) =>
+        {
+            element.BeginAnimation(TranslateTransform.XProperty, null);
+            transform.X = 0;
+        };
+        element.BeginAnimation(UIElement.OpacityProperty, animOpacity);
+        transform.BeginAnimation(TranslateTransform.XProperty, animX);
     }
 
     private void Game_MouseLeave(object sender, MouseEventArgs e)
     {
         if (sender is Button { IsKeyboardFocusWithin: true }) Keyboard.ClearFocus();
+        _gameCoverActive = false;
         _coverExitTimer.Stop();
         _coverExitTimer.Start();
     }
@@ -1075,9 +1492,13 @@ public partial class MainWindow : Window
     private void Game_GotKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
     {
         _coverExitTimer.Stop();
+        _gameCoverActive = true;
         ActivateGameLibraryFromHome();
-        QuickLaunchHost.Visibility = Visibility.Collapsed;
-        PerformanceModeHost.Visibility = Visibility.Collapsed;
+        
+        SlideOutContainer(PerformanceModeHost, 200);
+        SlideOutContainer(MediaControlsBar, 200);
+        SlideOutContainer(ContinueHost, 200);
+        SlideOutContainer(NotificationsHost, 200);
         ShowGameBackground(sender);
     }
 
@@ -1087,16 +1508,14 @@ public partial class MainWindow : Window
         _homeSelected = false;
         _homeHoverLocked = false;
         GamesList.IsHitTestVisible = true;
-        ContinuePlayingPanel.Visibility = Visibility.Collapsed;
-        QuickLaunchHost.Visibility = Visibility.Visible;
+        ContinueHost.Visibility = Visibility.Collapsed;
+        
         PerformanceModeHost.Visibility = Visibility.Visible;
         LibraryFilters.Visibility = Visibility.Visible;
-        _applicationsSelected = false;
         GameSearchBox.Text = string.Empty;
         GameSearchHost.Visibility = Visibility.Visible;
         GameSearchHost.Margin = new Thickness(0, 0, 0, 349);
         GameLibraryHeader.Foreground = Brushes.White;
-        ApplicationsHeader.Foreground = CreateFrozenBrush("#8A8A8A");
         StatusText.Text = $"{_allGames.Count} GAMES READY";
     }
 
@@ -1104,6 +1523,7 @@ public partial class MainWindow : Window
     {
         if (sender is not Button { IsMouseOver: true })
         {
+            _gameCoverActive = false;
             _coverExitTimer.Stop();
             _coverExitTimer.Start();
         }
@@ -1111,9 +1531,11 @@ public partial class MainWindow : Window
 
     private void ShowGameBackground(object sender)
     {
+        _gameCoverHovered = true;
+        _bgSlideshowTimer.Stop();
         if (sender is not Button { Tag: GameEntry game })
         {
-            HideGameBackground();
+            StartSlideshow();
             return;
         }
         ShowGameBackground(game);
@@ -1135,8 +1557,54 @@ public partial class MainWindow : Window
         GameBackgroundShade.Opacity = 1;
     }
 
+    private void InitSlideshow()
+    {
+        _slideshowGames = _allGames.Where(g => !g.IsHidden && !string.IsNullOrEmpty(g.Background)).ToList();
+        _bgSlideshowIndex = 0;
+        if (_slideshowGames.Count > 0 && !_gameCoverHovered)
+            StartSlideshow();
+    }
+
+    private void StartSlideshow()
+    {
+        if (_slideshowGames.Count == 0 || _gameCoverHovered || _customBackgroundActive) return;
+        _bgSlideshowTimer.Stop();
+        AdvanceSlideshow();
+        _bgSlideshowTimer.Start();
+    }
+
+    private void AdvanceSlideshow()
+    {
+        if (_gameCoverHovered || _customBackgroundActive || _slideshowGames.Count == 0 ||
+            GameDetailsPage.Visibility == Visibility.Visible ||
+            TaskSwitcherOverlay.Visibility == Visibility.Visible ||
+            SettingsOverlay.Visibility == Visibility.Visible ||
+            PowerOverlay.Visibility == Visibility.Visible ||
+            ConnectionsOverlay.Visibility == Visibility.Visible)
+        {
+            _bgSlideshowTimer.Stop(); return;
+        }
+        var game = _slideshowGames[_bgSlideshowIndex % _slideshowGames.Count];
+        _bgSlideshowIndex = (_bgSlideshowIndex + 1) % _slideshowGames.Count;
+        var image = LoadLocalImage(game.Background);
+        if (image is null) return;
+        FallbackGameBackground.Source = image;
+        FallbackGameBackground.Opacity = 0.35;
+        GameBackgroundShade.Opacity = 1;
+    }
+
     private void HideGameBackground()
     {
+        if (_customBackgroundActive)
+        {
+            ApplyShellBackground();
+            return;
+        }
+        if (!_gameCoverHovered && _slideshowGames.Count > 0)
+        {
+            StartSlideshow();
+            return;
+        }
         FallbackGameBackground.Opacity = 0;
         FallbackGameBackground.Source = null;
         GameBackgroundShade.Opacity = 0;
@@ -1156,6 +1624,7 @@ public partial class MainWindow : Window
     {
         PowerButton.Tag = "OverlayOpen";
         PowerOverlay.Visibility = Visibility.Visible;
+        SlideIn(PowerOverlay, 0, 24, 280);
         PowerOverlay.MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
     }
 
@@ -1164,6 +1633,14 @@ public partial class MainWindow : Window
     private void SettingsOverlayBack_Click(object sender, RoutedEventArgs e)
     {
         if (SettingsHomePanel.Visibility == Visibility.Visible) { CloseSettings(); return; }
+        if (BackgroundSettingsPanel.Visibility == Visibility.Visible)
+        {
+            BackgroundSettingsPanel.Visibility = Visibility.Collapsed;
+            SettingsHomePanel.Visibility = Visibility.Visible;
+            SettingsHomePanel.MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
+            return;
+        }
+        if (OsSettingsPanel.Visibility == Visibility.Visible) { OsSettingsPanel.Visibility = Visibility.Collapsed; SettingsHomePanel.Visibility = Visibility.Visible; SettingsHomePanel.MoveFocus(new TraversalRequest(FocusNavigationDirection.First)); return; }
         if (ControllerCalibrationPanel.Visibility == Visibility.Visible)
         {
             ControllerCalibrationPanel.Visibility = Visibility.Collapsed;
@@ -1188,6 +1665,7 @@ public partial class MainWindow : Window
     {
         SettingsButton.Tag = "OverlayOpen";
         SettingsHomePanel.Visibility = Visibility.Visible;
+        OsSettingsPanel.Visibility = Visibility.Collapsed;
         ControllerSettingsPanel.Visibility = Visibility.Collapsed;
         MetadataSettingsPanel.Visibility = Visibility.Collapsed;
         NetworkSettingsPanel.Visibility = Visibility.Collapsed;
@@ -1195,11 +1673,77 @@ public partial class MainWindow : Window
         RemoveSourceListPanel.Visibility = Visibility.Collapsed;
         RemoveMetadataSourcePanel.Visibility = Visibility.Collapsed;
         ControllerCalibrationPanel.Visibility = Visibility.Collapsed;
+        BackgroundSettingsPanel.Visibility = Visibility.Collapsed;
         MetadataSettingsHomeButton.Visibility = Visibility.Visible;
         SettingsOverlay.Visibility = Visibility.Visible;
+        SlideIn(SettingsOverlay, 0, 24, 300);
         SettingsOverlay.MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
     }
 
+    private void ShowOsSettings_Click(object sender, RoutedEventArgs e)
+    {
+        SettingsHomePanel.Visibility = Visibility.Collapsed;
+        OsSettingsPanel.Visibility = Visibility.Visible;
+        DefaultDesktopPicker.ItemsSource = DetectDesktopOptions();
+        DefaultDesktopPicker.SelectedItem = _inputSettings.DefaultDesktop;
+        OsSettingsPanel.MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
+    }
+
+    private static List<string> DetectDesktopOptions()
+    {
+        var options = new List<string>();
+        var outputPath = Path.Combine(Path.GetTempPath(), "omen-bcd-" + Guid.NewGuid().ToString("N") + ".txt");
+        try
+        {
+            var command = $"Start-Process cmd.exe -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '/c bcdedit /enum all > \"{outputPath}\"'";
+            using var scan = Process.Start(new ProcessStartInfo("powershell.exe", $"-NoProfile -WindowStyle Hidden -Command \"{command}\"")
+            {
+                UseShellExecute = false, CreateNoWindow = true
+            });
+            scan?.WaitForExit(20000);
+            if (!File.Exists(outputPath)) return options;
+            var output = File.ReadAllText(outputPath);
+            try { File.WriteAllText(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "OmenGamingShell", "bcd-info.txt"), output); } catch { }
+            foreach (Match match in Regex.Matches(output, @"(?im)^\s*description\s+(.+?)\s*$"))
+            {
+                var name = match.Groups[1].Value.Trim();
+                if (string.IsNullOrWhiteSpace(name) || name.Contains("Windows Boot Manager", StringComparison.OrdinalIgnoreCase) ||
+                    name.Contains("Windows Recovery", StringComparison.OrdinalIgnoreCase) || name.Contains("Firmware", StringComparison.OrdinalIgnoreCase) ||
+                    name.Contains("Hard Disk", StringComparison.OrdinalIgnoreCase) || name.Contains("Resume", StringComparison.OrdinalIgnoreCase) || name.Contains("Memory Diagnostic", StringComparison.OrdinalIgnoreCase) || name.Contains("Memory Diagnostics", StringComparison.OrdinalIgnoreCase)) continue;
+                var usable = new[] { "ubuntu", "fedora", "debian", "arch", "mint", "manjaro", "opensuse", "windows" }
+                    .Any(token => name.Contains(token, StringComparison.OrdinalIgnoreCase));
+                if (usable && !options.Contains(name, StringComparer.OrdinalIgnoreCase)) options.Add(name);
+            }
+        }
+        catch { }
+        finally { try { if (File.Exists(outputPath)) File.Delete(outputPath); } catch { } }
+        return options;
+    }
+    private void ScanOs_Click(object sender, RoutedEventArgs e)
+    {
+        var values = DetectDesktopOptions();
+        DefaultDesktopPicker.ItemsSource = values;
+        if (values.Contains(_inputSettings.DefaultDesktop, StringComparer.OrdinalIgnoreCase))
+            DefaultDesktopPicker.SelectedItem = _inputSettings.DefaultDesktop;
+        StatusText.Text = values.Count > 1 ? $"FOUND {values.Count - 1} OTHER DESKTOP(S)" : "ONLY WINDOWS WAS DETECTED";
+    }
+    private void AddOs_Click(object sender, RoutedEventArgs e)
+    {
+        var name = DefaultDesktopPicker.Text.Trim();
+        if (string.IsNullOrWhiteSpace(name)) return;
+        var values = DefaultDesktopPicker.Items.Cast<string>().ToList();
+        if (!values.Contains(name, StringComparer.OrdinalIgnoreCase)) values.Add(name);
+        DefaultDesktopPicker.ItemsSource = values;
+        DefaultDesktopPicker.SelectedItem = name;
+        _inputSettings.DefaultDesktop = name;
+        ControllerSettingsStore.Save(_inputSettings);
+    }
+    private void DefaultDesktopPicker_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (DefaultDesktopPicker.SelectedItem is not string desktop) return;
+        _inputSettings.DefaultDesktop = desktop;
+        ControllerSettingsStore.Save(_inputSettings);
+    }
     private void ShowControllerSettings_Click(object sender, RoutedEventArgs e)
     {
         SettingsHomePanel.Visibility = Visibility.Collapsed;
@@ -1222,6 +1766,96 @@ public partial class MainWindow : Window
         NetworkSettingsPanel.MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
     }
 
+    private void LoadBackgroundSettings()
+    {
+        _backgroundSettings = BackgroundSettingsStore.Load();
+        ApplyShellBackground();
+    }
+
+    private void ShowBackgroundSettings_Click(object sender, RoutedEventArgs e)
+    {
+        SettingsHomePanel.Visibility = Visibility.Collapsed;
+        BackgroundSettingsPanel.Visibility = Visibility.Visible;
+        RefreshBackgroundChoiceList();
+        BackgroundSettingsPanel.MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
+    }
+
+    private void RefreshBackgroundChoiceList()
+    {
+        var choices = _allGames
+            .Where(game => !game.IsApplication && !game.IsHidden && !string.IsNullOrWhiteSpace(game.Background) && File.Exists(game.Background))
+            .OrderBy(game => game.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(game => new BackgroundChoice(game.Name, LoadLocalImage(game.Background),
+                IsCurrentBackground(game.Background), game.Background))
+            .ToList();
+        BackgroundChoiceList.ItemsSource = choices;
+    }
+
+    private bool IsCurrentBackground(string path)
+    {
+        if (!_backgroundSettings.UseCustomBackground) return false;
+        return string.Equals(_backgroundSettings.CustomBackgroundPath, path, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void BrowseBackground_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Choose a shell background image",
+            Filter = "Image files|*.png;*.jpg;*.jpeg;*.bmp;*.webp|All files|*.*"
+        };
+        if (dialog.ShowDialog() != true) return;
+        _backgroundSettings.CustomBackgroundPath = dialog.FileName;
+        _backgroundSettings.UseCustomBackground = true;
+        BackgroundSettingsStore.Save(_backgroundSettings);
+        ApplyShellBackground();
+        RefreshBackgroundChoiceList();
+        StatusText.Text = "SHELL BACKGROUND UPDATED";
+    }
+
+    private void BackgroundChoice_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: BackgroundChoice choice }) return;
+        _backgroundSettings.CustomBackgroundPath = choice.Path;
+        _backgroundSettings.UseCustomBackground = true;
+        BackgroundSettingsStore.Save(_backgroundSettings);
+        ApplyShellBackground();
+        RefreshBackgroundChoiceList();
+        StatusText.Text = $"SHELL BACKGROUND: {choice.Name.ToUpperInvariant()}";
+    }
+
+    private void ResetBackground_Click(object sender, RoutedEventArgs e)
+    {
+        _backgroundSettings.UseCustomBackground = false;
+        _backgroundSettings.CustomBackgroundPath = null;
+        BackgroundSettingsStore.Save(_backgroundSettings);
+        ApplyShellBackground();
+        RefreshBackgroundChoiceList();
+        StatusText.Text = "BACKGROUND RESET TO AUTO SLIDESHOW";
+    }
+
+    private void ApplyShellBackground()
+    {
+        if (_backgroundSettings.UseCustomBackground &&
+            !string.IsNullOrWhiteSpace(_backgroundSettings.CustomBackgroundPath) &&
+            File.Exists(_backgroundSettings.CustomBackgroundPath))
+        {
+            var image = LoadLocalImage(_backgroundSettings.CustomBackgroundPath);
+            if (image is not null)
+            {
+                _customBackgroundActive = true;
+                _bgSlideshowTimer.Stop();
+                _gameCoverHovered = false;
+                FallbackGameBackground.Source = image;
+                FallbackGameBackground.Opacity = 0.35;
+                GameBackgroundShade.Opacity = 1;
+                return;
+            }
+        }
+        _customBackgroundActive = false;
+        HideGameBackground();
+    }
+
     private void RefreshNetworkStatus_Click(object sender, RoutedEventArgs e) => UpdateNetworkSettingsStatus();
 
     private async void WifiStatusIcon_Click(object sender, MouseButtonEventArgs e) => await OpenConnectionsAsync(true);
@@ -1238,6 +1872,7 @@ public partial class MainWindow : Window
         BluetoothConnectionsPanel.Visibility = wifi ? Visibility.Collapsed : Visibility.Visible;
         if (!wifi && _cachedBluetoothDevices.Count > 0) BluetoothDevicesList.ItemsSource = _cachedBluetoothDevices;
         ConnectionsOverlay.Visibility = Visibility.Visible;
+        SlideIn(ConnectionsOverlay, 0, 24, 280);
         await RefreshConnectionsAsync(wifi);
         if (wifi) _wifiScanTimer.Start();
         else _wifiScanTimer.Stop();
@@ -1251,7 +1886,7 @@ public partial class MainWindow : Window
         if (showStatus) StatusText.Text = wifi ? "SCANNING WI-FI NETWORKS" : "SCANNING BLUETOOTH DEVICES";
         try
         {
-            if (wifi) WifiNetworksList.ItemsSource = await ConnectionService.ScanWifiAsync();
+            if (wifi) { WifiNetworksList.ItemsSource = await ConnectionService.ScanWifiAsync(); CheckListBoxArrows(); }
             else
             {
                 _cachedBluetoothDevices = await Task.Run(ConnectionService.ScanBluetooth);
@@ -1352,17 +1987,18 @@ public partial class MainWindow : Window
     {
         if (sender is not Button { Tag: BluetoothDevice device }) return;
         bool success;
-        if (device.Connected) success = await Task.Run(() => ConnectionService.RemoveBluetooth(device));
-        else success = ConnectionService.PairBluetooth(new WindowInteropHelper(this).Handle, device);
+        if (device.Connected) success = await Task.Run(() => ConnectionService.DisconnectBluetooth(device));
+        else success = await Task.Run(() => ConnectionService.ConnectBluetooth(device));
         ShowNotification(success
             ? device.Connected ? $"{device.Name} disconnected" : $"{device.Name} connected"
             : $"Could not {(device.Connected ? "disconnect" : "connect")} {device.Name}");
+        await Task.Delay(1000);
         await RefreshConnectionsAsync(false);
     }
     private void CloseConnections_Click(object sender, RoutedEventArgs e)
     {
         _wifiScanTimer.Stop();
-        ConnectionsOverlay.Visibility = Visibility.Collapsed;
+        SlideOut(ConnectionsOverlay, 0, 18, 180);
     }
 
     private void UpdateNetworkSettingsStatus()
@@ -1424,9 +2060,15 @@ public partial class MainWindow : Window
 
     private void BackToSettingsHome_Click(object sender, RoutedEventArgs e)
     {
+        OsSettingsPanel.Visibility = Visibility.Collapsed;
         ControllerSettingsPanel.Visibility = Visibility.Collapsed;
         MetadataSettingsPanel.Visibility = Visibility.Collapsed;
         NetworkSettingsPanel.Visibility = Visibility.Collapsed;
+        ControllerCalibrationPanel.Visibility = Visibility.Collapsed;
+        AddMetadataSourcePanel.Visibility = Visibility.Collapsed;
+        RemoveSourceListPanel.Visibility = Visibility.Collapsed;
+        RemoveMetadataSourcePanel.Visibility = Visibility.Collapsed;
+        BackgroundSettingsPanel.Visibility = Visibility.Collapsed;
         SettingsHomePanel.Visibility = Visibility.Visible;
         SettingsHomePanel.MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
     }
@@ -1438,6 +2080,7 @@ public partial class MainWindow : Window
         InputMethodPicker.SelectedItem = _inputSettings.InputMethod;
         GuideHomeToggle.IsChecked = _inputSettings.GuideOpensHomeWhileGaming;
         NavigationAudioToggle.IsChecked = _inputSettings.NavigationAudioEnabled;
+        ShowButtonGuideToggle.IsChecked = _inputSettings.ShowButtonGuide;
         NavigationAudioVolumeText.Text = $"{_inputSettings.NavigationAudioVolume}%";
         if (_inputSettings.PerformanceMode is "Quiet" or "Power Saver") _inputSettings.PerformanceMode = "Eco";
         if (_inputSettings.PerformanceMode == "Performance") _inputSettings.PerformanceMode = "Ultimate";
@@ -1450,18 +2093,26 @@ public partial class MainWindow : Window
 
     private void PerformanceMode_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is not Button { Tag: string mode }) return;
-        _inputSettings.PerformanceMode = mode;
-        UpdatePerformanceModeButtons();
-        ControllerSettingsStore.Save(_inputSettings);
-        ApplyPerformanceMode(true);
+        try
+        {
+            if (sender is not Button { Tag: string mode }) return;
+            if (mode is not ("Ultimate" or "Balanced" or "Eco")) return;
+            _inputSettings.PerformanceMode = mode;
+            UpdatePerformanceModeButtons();
+            try { ControllerSettingsStore.Save(_inputSettings); }
+            catch (Exception saveError) { ErrorLogStore.Log(saveError.Message, "Performance mode settings", saveError.ToString()); }
+            ApplyPerformanceMode(true);
+        }
+        catch (Exception exception)
+        {
+            ErrorLogStore.Log(exception.Message, "Performance mode controller selection", exception.ToString());
+            ShowNotification("Performance mode selection failed");
+        }
     }
-
     private void UpdatePerformanceModeButtons()
     {
-        UltimateModeButton.Background = CreateFrozenBrush(_inputSettings.PerformanceMode == "Ultimate" ? "#C90030" : "#18FFFFFF");
-        BalancedModeButton.Background = CreateFrozenBrush(_inputSettings.PerformanceMode == "Balanced" ? "#246BCE" : "#18FFFFFF");
-        EcoModeButton.Background = CreateFrozenBrush(_inputSettings.PerformanceMode == "Eco" ? "#188A4F" : "#18FFFFFF");
+        if (DashPerfModeText is not null)
+            DashPerfModeText.Text = (_inputSettings.PerformanceMode ?? "Balanced").ToUpperInvariant();
     }
 
     private void ApplyPerformanceMode(bool reportStatus)
@@ -1523,6 +2174,13 @@ public partial class MainWindow : Window
             NavigationSound.Play(ControllerCommand.Accept, _inputSettings.NavigationAudioVolume);
     }
 
+    private void ShowButtonGuideToggle_Click(object sender, RoutedEventArgs e)
+    {
+        _inputSettings.ShowButtonGuide = ShowButtonGuideToggle.IsChecked == true;
+        ControllerSettingsStore.Save(_inputSettings);
+        UpdateTaskControllerPrompts();
+    }
+
     private void DecreaseAudioVolume_Click(object sender, RoutedEventArgs e) => ChangeAudioVolume(-5);
     private void IncreaseAudioVolume_Click(object sender, RoutedEventArgs e) => ChangeAudioVolume(5);
 
@@ -1571,12 +2229,17 @@ public partial class MainWindow : Window
 
     private void HandleWindowsKey()
     {
+        if (TaskSwitcherOverlay.Visibility == Visibility.Visible)
+        {
+            CloseTaskSwitcher();
+            return;
+        }
         Show();
         WindowState = WindowState.Maximized;
         Activate();
         Topmost = true;
         Dispatcher.BeginInvoke(() => Topmost = false, DispatcherPriority.ApplicationIdle);
-        ShowHomePage();
+        ShowWinKeyOverlay();
     }
 
     private void OpenSearchFromHome()
@@ -1598,21 +2261,17 @@ public partial class MainWindow : Window
     {
         if (!IsInitialized) return;
         var query = GameSearchBox.Text.Trim();
-        var source = _applicationsSelected
-            ? ApplicationPageSource(string.IsNullOrWhiteSpace(query) ? _activeApplicationFilter : "All",
-                !string.IsNullOrWhiteSpace(query)).ToList()
-            : _allGames.Where(game => !game.IsHidden).ToList();
+        var source = _allGames.Where(game => !game.IsHidden).ToList();
         var filtered = string.IsNullOrWhiteSpace(query)
             ? source
             : source.Where(game => game.Name.Contains(query, StringComparison.OrdinalIgnoreCase) ||
                                    (game.Genres?.Contains(query, StringComparison.OrdinalIgnoreCase) ?? false) ||
                                    (game.Developer?.Contains(query, StringComparison.OrdinalIgnoreCase) ?? false) ||
                                    game.StoreName.Contains(query, StringComparison.OrdinalIgnoreCase)).ToList();
-        if (_applicationsSelected) SetApplicationResults(filtered);
-        else GamesList.ItemsSource = filtered;
-        SetEmptyLibrary(filtered.Count == 0, _applicationsSelected ? "NO MATCHING APPLICATIONS" : "NO MATCHING GAMES", "Try a different search term.");
+        GamesList.ItemsSource = filtered;
+        SetEmptyLibrary(filtered.Count == 0, "NO MATCHING GAMES", "Try a different search term.");
         StatusText.Text = string.IsNullOrWhiteSpace(query)
-            ? $"{source.Count} {(_applicationsSelected ? "APPLICATIONS" : "GAMES")} READY"
+            ? $"{source.Count} GAMES READY"
             : $"{filtered.Count} SEARCH RESULT{(filtered.Count == 1 ? string.Empty : "S")}";
     }
 
@@ -1643,13 +2302,9 @@ public partial class MainWindow : Window
     {
         GameSearchBox.Text = string.Empty;
         GameSearchHost.Visibility = Visibility.Visible;
-        var source = _applicationsSelected
-            ? ApplicationPageSource(_activeApplicationFilter).ToList()
-            : _allGames.Where(game => !game.IsHidden).ToList();
-        if (_applicationsSelected) SetApplicationResults(source);
-        else GamesList.ItemsSource = source;
-        SetEmptyLibrary(source.Count == 0, _applicationsSelected ? "NO APPLICATIONS FOUND" : "NO GAMES FOUND",
-            _applicationsSelected ? "Choose another application category." : "Refresh the library to scan again.");
+        var source = _allGames.Where(game => !game.IsHidden).ToList();
+        GamesList.ItemsSource = source;
+        SetEmptyLibrary(source.Count == 0, "NO GAMES FOUND", "Refresh the library to scan again.");
         MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
     }
 
@@ -1927,6 +2582,7 @@ public partial class MainWindow : Window
         if (ReferenceEquals(sender, ConnectionsOverlay)) ConnectionsOverlay.Visibility = Visibility.Collapsed;
         else if (ReferenceEquals(sender, TaskSwitcherOverlay)) CloseTaskSwitcher();
         else if (ReferenceEquals(sender, ErrorLogOverlay)) CloseErrorLog();
+        else if (ReferenceEquals(sender, AccessoriesOverlay)) AccessoriesOverlay.Visibility = Visibility.Collapsed;
         else if (ReferenceEquals(sender, MetadataCorrectionOverlay))
             CancelMetadataCorrection_Click(this, new RoutedEventArgs());
     }
@@ -1952,7 +2608,7 @@ public partial class MainWindow : Window
         RefreshButton.IsEnabled = false;
         ScanProgress.Value = 0;
         ScanProgress.Visibility = Visibility.Visible;
-        StatusText.Text = _applicationsSelected ? "SCANNING FOR APPLICATIONS" : "SCANNING FOR GAMES";
+        StatusText.Text = "SCANNING FOR GAMES";
         var progress = new Progress<int>(value =>
         {
             ScanProgress.Value = value;
@@ -1961,28 +2617,11 @@ public partial class MainWindow : Window
 
         try
         {
-            if (_applicationsSelected)
-            {
-                ScanProgress.Value = 20;
-                var applications = await Task.Run(ApplicationScanner.Scan);
-                ScanProgress.Value = 75;
-                _applications = FilterGameShortcuts(applications, _allGames);
-                lock (ShortcutResolveSync) ShortcutResolveCache.Clear();
-                UpdateApplicationRunningStates();
-                RefreshQuickLaunchItems();
-                ApplyApplicationFilter();
-                ScanProgress.Value = 100;
-                ShowNotification($"{_applications.Count} applications detected");
-                return;
-            }
-
             var knownGames = _allGames.Select(game => game.Target).ToHashSet(StringComparer.OrdinalIgnoreCase);
             var games = await Task.Run(() => GameLibrary.Load(progress));
             var newGames = games.Count(game => !knownGames.Contains(game.Target));
             await MetadataEnrichmentService.EnrichAsync(games, progress, scanStatus);
             DisplayGames(games);
-            _applications = FilterGameShortcuts(ApplicationScanner.Scan(), games);
-            RefreshQuickLaunchItems();
             ShowNotification(newGames > 0
                 ? $"{newGames} new game{(newGames == 1 ? string.Empty : "s")} detected • Metadata download completed"
                 : "Metadata download completed");
@@ -2015,81 +2654,57 @@ public partial class MainWindow : Window
 
     private void DesktopMode_Click(object sender, RoutedEventArgs e)
     {
-        try
+        var targetOs = _inputSettings.DefaultDesktop;
+        if (string.IsNullOrWhiteSpace(targetOs))
         {
-            Process.Start(new ProcessStartInfo("explorer.exe") { UseShellExecute = true });
-            StatusText.Text = "SWITCHING TO DESKTOP MODE";
-            AllowShellClose = true;
-            Close();
+            StatusText.Text = "SCAN AND SELECT A DEFAULT DESKTOP FIRST";
+            return;
         }
-        catch (Exception exception)
+        var bcdPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "OmenGamingShell", "bcd-info.txt");
+        if (!File.Exists(bcdPath)) { StatusText.Text = "SCAN OS BEFORE SWITCHING DESKTOP"; return; }
+        var output = File.ReadAllText(bcdPath);
+        var currentDesc = string.Empty;
+        var currentMatch = Regex.Match(output, @"(?im)identifier\s+\{current\}.*?^\s*description\s+(.+?)\s*$", RegexOptions.Singleline);
+        if (currentMatch.Success) currentDesc = currentMatch.Groups[1].Value.Trim();
+        if (string.IsNullOrWhiteSpace(currentDesc))
         {
-            StatusText.Text = $"FAILED TO START DESKTOP MODE: {exception.Message}";
-            ClosePowerOptions();
+            var fallback = Regex.Match(output, @"(?is)Windows Boot Loader\s+---+\s+identifier\s+\{current\}[^\n]*\n(?:[^\n]*\n)*?\s*description\s+(.+?)\s*$");
+            if (fallback.Success) currentDesc = fallback.Groups[1].Value.Trim();
         }
-    }
-
-    private void LinuxMode_Click(object sender, RoutedEventArgs e)
-    {
-        try
+        if (!string.IsNullOrWhiteSpace(currentDesc) &&
+            (targetOs.Contains(currentDesc, StringComparison.OrdinalIgnoreCase) ||
+             currentDesc.Contains(targetOs, StringComparison.OrdinalIgnoreCase)))
         {
-            var linuxBootEntry = FindLinuxFirmwareBootEntry();
-            if (linuxBootEntry is null)
+            try
             {
-                StatusText.Text = "NO LINUX UEFI BOOT ENTRY FOUND";
-                ClosePowerOptions();
-                return;
+                Process.Start(new ProcessStartInfo("explorer.exe") { UseShellExecute = true });
+                AllowShellClose = true;
+                Close();
             }
-
-            // Set the matching UEFI entry for the next boot only. Windows remains
-            // the normal default on subsequent starts.
-            var startInfo = new ProcessStartInfo("cmd.exe")
+            catch (Exception exception) { StatusText.Text = $"FAILED TO START DESKTOP: {exception.Message}"; }
+            return;
+        }
+        try
+        {
+            var escaped = Regex.Escape(targetOs);
+            var identifier = string.Empty;
+            var entries = Regex.Split(output, @"(?=^\s*(?:Windows Boot|Firmware|Resume)[^\n]*\n)", RegexOptions.Multiline);
+            foreach (var entry in entries)
             {
-                Arguments = $"/c bcdedit /set {{fwbootmgr}} bootsequence {linuxBootEntry} /addfirst && shutdown /r /t 0",
-                UseShellExecute = true,
-                Verb = "runas",
-                WindowStyle = ProcessWindowStyle.Hidden
-            };
-            Process.Start(startInfo);
+                if (!Regex.IsMatch(entry, $@"description\s+[^\r\n]*{escaped}", RegexOptions.IgnoreCase)) continue;
+                var idMatch = Regex.Match(entry, @"identifier\s+(\{[^}]+\})", RegexOptions.IgnoreCase);
+                if (idMatch.Success) { identifier = idMatch.Groups[1].Value; break; }
+            }
+            if (string.IsNullOrWhiteSpace(identifier))
+            {
+                var singleMatch = Regex.Match(output, $@"(?im)(identifier\s+(\{{[^}}]+\}})\s*\r?\n(?:(?!\r?\n)[^\r?\n]*\r?\n)*?\s*description\s+[^\r\n]*{escaped}[^\r\n]*)");
+                if (singleMatch.Success) identifier = singleMatch.Groups[2].Value;
+            }
+            if (string.IsNullOrWhiteSpace(identifier)) { StatusText.Text = "SELECTED OS BOOT ENTRY NOT FOUND"; return; }
+            var command = $"bcdedit /set {{fwbootmgr}} bootsequence {identifier} /addfirst && shutdown /r /t 0";
+            Process.Start(new ProcessStartInfo("powershell.exe", $"-NoProfile -Command \"Start-Process cmd.exe -Verb RunAs -ArgumentList '/c {command}'\"") { UseShellExecute = false, CreateNoWindow = true });
         }
-        catch (System.ComponentModel.Win32Exception exception) when (exception.NativeErrorCode == 1223)
-        {
-            StatusText.Text = "SWITCH TO LINUX CANCELLED";
-            ClosePowerOptions();
-        }
-        catch
-        {
-            StatusText.Text = "UNABLE TO SWITCH TO LINUX";
-            ClosePowerOptions();
-        }
-    }
-
-    private static string? FindLinuxFirmwareBootEntry()
-    {
-        using var process = Process.Start(new ProcessStartInfo("bcdedit.exe", "/enum firmware")
-        {
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            CreateNoWindow = true
-        });
-        if (process is null) return null;
-        var output = process.StandardOutput.ReadToEnd();
-        process.WaitForExit(5000);
-        if (process.ExitCode != 0) return null;
-
-        var matches = Regex.Matches(output,
-            @"identifier\s+(\{[0-9a-f-]+\})[\s\S]*?description\s+([^\r\n]+)",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-        var linuxNames = new[]
-        {
-            "linux", "ubuntu", "fedora", "debian", "arch", "manjaro", "pop!_os",
-            "pop os", "mint", "opensuse", "endeavouros", "grub"
-        };
-        return matches.Cast<Match>()
-            .Where(match => linuxNames.Any(name => match.Groups[2].Value.Contains(name,
-                StringComparison.OrdinalIgnoreCase)))
-            .Select(match => match.Groups[1].Value)
-            .FirstOrDefault();
+        catch (Exception exception) { StatusText.Text = $"FAILED TO SWITCH DESKTOP: {exception.Message}"; }
     }
 
     private void CloseLauncher_Click(object sender, RoutedEventArgs e)
@@ -2129,6 +2744,12 @@ public partial class MainWindow : Window
             e.Handled = true;
             return;
         }
+        if (e.Key == Key.Escape && AccessoriesOverlay.Visibility == Visibility.Visible)
+        {
+            AccessoriesOverlay.Visibility = Visibility.Collapsed;
+            e.Handled = true;
+            return;
+        }
         if (e.Key == Key.Escape && MetadataCorrectionOverlay.Visibility == Visibility.Visible)
         {
             CancelMetadataCorrection_Click(this, new RoutedEventArgs());
@@ -2163,43 +2784,89 @@ public partial class MainWindow : Window
 
     private void HandleControllerCommand(ControllerCommand command)
     {
-        ActivateNonMouseInput();
-        if (_inputSettings.NavigationAudioEnabled)
-            NavigationSound.Play(command, _inputSettings.NavigationAudioVolume);
-        switch (command)
+        try
         {
-            case ControllerCommand.Left:
-            case ControllerCommand.Right:
-            case ControllerCommand.Up:
-            case ControllerCommand.Down:
-                NavigateController(command);
-                break;
-            case ControllerCommand.Accept:
-                if (Keyboard.FocusedElement is Button button && button.IsEnabled)
-                    button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent, button));
-                else if (Keyboard.FocusedElement is ComboBox comboBox)
-                    comboBox.IsDropDownOpen = !comboBox.IsDropDownOpen;
-                break;
-            case ControllerCommand.Back:
-                ControllerBack();
-                break;
-            case ControllerCommand.PreviousTab:
-                ShowTaskSwitcher();
-                break;
-            case ControllerCommand.NextTab:
-                SelectControllerTab(true);
-                break;
-            case ControllerCommand.Settings:
-                if (SettingsOverlay.Visibility != Visibility.Visible)
-                    Settings_Click(SettingsButton, new RoutedEventArgs());
-                break;
-            case ControllerCommand.Power:
-                if (PowerOverlay.Visibility != Visibility.Visible)
-                    PowerOptions_Click(PowerButton, new RoutedEventArgs());
-                break;
+            ActivateNonMouseInput();
+            if (_inputSettings.NavigationAudioEnabled)
+                NavigationSound.Play(command, _inputSettings.NavigationAudioVolume);
+            switch (command)
+            {
+                case ControllerCommand.Left:
+                case ControllerCommand.Right:
+                case ControllerCommand.Up:
+                case ControllerCommand.Down:
+                    NavigateController(command);
+                    break;
+                case ControllerCommand.Accept:
+                    if (Keyboard.FocusedElement is Button button && button.IsEnabled)
+                    {
+                        var selectedButton = button;
+                        Dispatcher.BeginInvoke(() =>
+                        {
+                            try
+                            {
+                                if (!selectedButton.IsEnabled) return;
+                                if (selectedButton.Tag is GameEntry game)
+                                    Game_Click(selectedButton, new RoutedEventArgs(Button.ClickEvent, selectedButton));
+                                else if (selectedButton == ErrorLogButton)
+                                    ErrorLog_Click(selectedButton, new RoutedEventArgs(Button.ClickEvent, selectedButton));
+                                else if (selectedButton.Tag is string mode && mode is "Ultimate" or "Balanced" or "Eco")
+                                    PerformanceMode_Click(selectedButton, new RoutedEventArgs(Button.ClickEvent, selectedButton));
+                                else
+                                    selectedButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                            }
+                            catch (Exception exception)
+                            {
+                                ErrorLogStore.Log(exception.Message, "Controller selection", exception.ToString());
+                                ShowNotification("Controller selection failed");
+                            }
+                        }, DispatcherPriority.Input);
+                    }
+                    else if (Keyboard.FocusedElement == BackupStatusHost)
+                        OpenBackupSettings();
+                    else if (Keyboard.FocusedElement == ContinueHost)
+                        ContinueGame_Click(this, new RoutedEventArgs());
+                    else if (Keyboard.FocusedElement is Border border && border.Name == "MediaAlbumArt")
+                        OpenMediaApp();
+                    else if (Keyboard.FocusedElement == MediaPrevBorder)
+                        MediaPrev_Click(this, new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left));
+                    else if (Keyboard.FocusedElement == MediaPlayBorder)
+                        MediaPlayPause_Click(this, new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left));
+                    else if (Keyboard.FocusedElement == MediaNextBorder)
+                        MediaNext_Click(this, new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left));
+                    else if (Keyboard.FocusedElement == OpenSpotifyBorder)
+                        OpenSpotify_Click(this, new RoutedEventArgs());
+                    else if (Keyboard.FocusedElement is ComboBox comboBox)
+                        comboBox.IsDropDownOpen = !comboBox.IsDropDownOpen;
+                    break;
+                case ControllerCommand.Back:
+                    ControllerBack();
+                    break;
+                case ControllerCommand.PreviousTab:
+                    NavigateController(ControllerCommand.Left);
+                    break;
+                case ControllerCommand.NextTab:
+                    NavigateController(ControllerCommand.Right);
+                    break;
+                case ControllerCommand.PreviousPage:
+                case ControllerCommand.NextPage:
+                    break;
+                case ControllerCommand.Settings:
+                    if (SettingsOverlay.Visibility != Visibility.Visible)
+                        Settings_Click(SettingsButton, new RoutedEventArgs());
+                    break;
+                case ControllerCommand.Power:
+                    if (PowerOverlay.Visibility != Visibility.Visible)
+                        PowerOptions_Click(PowerButton, new RoutedEventArgs());
+                    break;
+            }
+        }
+        catch (Exception exception)
+        {
+            ErrorLogStore.Log(exception.Message, "Controller selection", exception.ToString());
+            ShowNotification("Controller input error logged");
         }
     }
-
     private void NavigateController(ControllerCommand command)
     {
         var focused = Keyboard.FocusedElement as DependencyObject;
@@ -2222,28 +2889,40 @@ public partial class MainWindow : Window
         }
         if (_homeSelected)
         {
-            var quickButtons = FindVisualChildren<Button>(QuickLaunchList)
-                .Where(button => button.IsVisible && button.IsEnabled).ToList();
-            var onContinue = focused is not null &&
-                (ReferenceEquals(ContinueButton, focused) || IsAncestorOf(ContinueButton, focused));
-            var quickIndex = focused is null ? -1 : quickButtons.FindIndex(button =>
-                ReferenceEquals(button, focused) || IsAncestorOf(button, focused));
+            var mediaDeps = new UIElement[] { MediaAlbumArt, MediaPrevBorder, MediaPlayBorder, MediaNextBorder, OpenSpotifyBorder }
+                .Where(b => b is not null && b.Visibility == Visibility.Visible).ToList();
+            var isOnContinue = focused is not null && (ReferenceEquals(focused, ContinueHost) || IsAncestorOf(ContinueHost, focused));
+            var isOnMedia = focused is not null && mediaDeps.Any(b => ReferenceEquals(b, focused) || IsAncestorOf(b, focused));
+            var isOnPerf = focused is not null && (ReferenceEquals(focused, PerformanceModeHost) || IsAncestorOf(PerformanceModeHost, focused));
+            var isOnNotif = focused is not null && (ReferenceEquals(focused, NotificationsHost) || IsAncestorOf(NotificationsHost, focused));
+
             if (command is ControllerCommand.Up or ControllerCommand.Down)
             {
-                if (onContinue && quickButtons.Count > 0) quickButtons[0].Focus();
-                else if (quickIndex >= 0 && ContinuePlayingPanel.Visibility == Visibility.Visible) ContinueButton.Focus();
-                RememberHomeFocus();
-                return;
-            }
-            if (quickIndex >= 0 && command is ControllerCommand.Left or ControllerCommand.Right)
-            {
-                var offset = command == ControllerCommand.Right ? 1 : -1;
-                quickButtons[(quickIndex + offset + quickButtons.Count) % quickButtons.Count].Focus();
+                var off = command == ControllerCommand.Down ? 1 : -1;
+                var zones = new List<UIElement>();
+                if (ContinueHost.Visibility == Visibility.Visible) zones.Add(ContinueHost);
+                zones.AddRange(mediaDeps);
+                zones.Add(PerformanceModeHost);
+                if (NotificationsHost.Visibility == Visibility.Visible) zones.Add(NotificationsHost);
+                if (zones.Count == 0) return;
+                var ci = -1;
+                if (isOnContinue) ci = 0;
+                else if (isOnMedia)
+                {
+                    var mediaIdx = mediaDeps.FindIndex(b => ReferenceEquals(b, focused) || IsAncestorOf(b, focused));
+                    ci = mediaIdx + (ContinueHost.Visibility == Visibility.Visible ? 1 : 0);
+                }
+                else if (isOnPerf) ci = zones.IndexOf(PerformanceModeHost);
+                else if (isOnNotif) ci = zones.Count - 1;
+                var ni = ci < 0 ? 0 : Math.Clamp(ci + off, 0, zones.Count - 1);
+                var target = zones[ni];
+                if (ReferenceEquals(target, ContinueHost)) ContinueHost.Focus();
+                else if (target is UIElement u) u.Focus();
                 RememberHomeFocus();
                 return;
             }
         }
-        var activeLibraryList = _applicationsSelected ? ApplicationList : GamesList;
+        var activeLibraryList = GamesList;
         var gameButtons = FindVisualChildren<Button>(activeLibraryList)
             .Where(button => button.IsVisible && button.IsEnabled).ToList();
         var gameIndex = focused is null ? -1 : gameButtons.FindIndex(button =>
@@ -2292,7 +2971,7 @@ public partial class MainWindow : Window
     private void RememberHomeFocus()
     {
         if (!_homeSelected || Keyboard.FocusedElement is not DependencyObject focused) return;
-        if (ReferenceEquals(ContinueButton, focused) || IsAncestorOf(ContinueButton, focused))
+        if (false)
             _lastHomeSelection = "Continue";
         else
         {
@@ -2301,39 +2980,107 @@ public partial class MainWindow : Window
         }
     }
 
-    private void ShowTaskSwitcher()
+    private void ShowWinKeyOverlay()
     {
-        if (TaskSwitcherOverlay.Visibility == Visibility.Visible)
-        {
-            var buttons = FindVisualChildren<Button>(TaskWindowList).Where(button => button.IsVisible).ToList();
-            if (buttons.Count > 1)
-            {
-                var current = Keyboard.FocusedElement as DependencyObject;
-                var index = current is null ? -1 : buttons.FindIndex(button =>
-                    ReferenceEquals(button, current) || IsAncestorOf(button, current));
-                buttons[(index + 1 + buttons.Count) % buttons.Count].Focus();
-            }
-            return;
-        }
-
-        Show();
-        WindowState = WindowState.Maximized;
-        Activate();
+        CloseAltTabOverlay();
+        CapturePreviousForegroundWindow();
+        _suppressFocusRestore = false;
         Topmost = true;
-        Dispatcher.BeginInvoke(() => Topmost = false, DispatcherPriority.ApplicationIdle);
         var shellHandle = new WindowInteropHelper(this).Handle;
-        var windows = GetTaskWindows(shellHandle);
-
-        TaskWindowList.ItemsSource = windows;
+        SetForegroundWindow(shellHandle);
+        _winKeyWindows = GetTaskWindows(shellHandle);
+        TaskWindowList.ItemsSource = _winKeyWindows;
+        WinKeyWindowsSection.Visibility = _winKeyWindows.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        WinKeyAppsSection.Visibility = Visibility.Collapsed;
+        WinKeyEmptyHint.Visibility = Visibility.Collapsed;
+        RefreshWinKeyApps(string.Empty);
         UpdateTaskControllerPrompts();
+        RefreshDashboard();
         TaskSwitcherOverlay.Visibility = Visibility.Visible;
         Dispatcher.BeginInvoke(() =>
         {
+            WinKeySearchBox.Clear();
+            WinKeySearchBox.Focus();
             UpdateLayout();
             RegisterTaskThumbnails();
-            FindVisualChildren<Button>(TaskWindowList).FirstOrDefault()?.Focus();
         }, DispatcherPriority.Loaded);
     }
+
+    private async void RefreshDashboard()
+    {
+        RefreshNotificationsContainer();
+        UpdateContinuePlaying();
+        UpdatePerformanceModeButtons();
+        await UpdateMediaControlsAsync();
+    }
+
+    private void WinKeySearchBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (!IsInitialized || TaskSwitcherOverlay.Visibility != Visibility.Visible) return;
+        var query = WinKeySearchBox.Text.Trim();
+        RefreshWinKeyApps(query);
+        // Filter windows by query
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            TaskWindowList.ItemsSource = _winKeyWindows;
+            WinKeyWindowsSection.Visibility = _winKeyWindows.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+            WinKeyEmptyHint.Visibility = Visibility.Collapsed;
+        }
+        else
+        {
+            var filtered = _winKeyWindows
+                .Where(w => w.Title.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                            w.ProcessName.Contains(query, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            TaskWindowList.ItemsSource = filtered;
+            WinKeyWindowsSection.Visibility = filtered.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+            // Show empty hint if neither section has results
+            WinKeyEmptyHint.Visibility = (WinKeyAppsSection.Visibility != Visibility.Visible && filtered.Count == 0)
+                ? Visibility.Visible : Visibility.Collapsed;
+        }
+        Dispatcher.BeginInvoke(() => RegisterTaskThumbnails(), DispatcherPriority.Loaded);
+    }
+
+    private void WinKeySearchBox_GotKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
+    {
+        if (WinKeySearchBorder is null) return;
+        WinKeySearchBorder.BorderBrush = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#66FF003C"));
+        WinKeySearchGlyph.Text = "\uEDB8";
+        WinKeySearchGlyph.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#FF003C"));
+    }
+
+    private void WinKeySearchBox_LostKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
+    {
+        if (WinKeySearchBorder is null) return;
+        WinKeySearchBorder.BorderBrush = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#14FFFFFF"));
+        WinKeySearchGlyph.Text = string.Empty;
+    }
+
+    private void RefreshWinKeyApps(string query)
+    {
+        var allApps = _allGames.Where(g => !g.IsHidden).ToList();
+        if (!string.IsNullOrWhiteSpace(query))
+        {
+            allApps = allApps.Where(a => a.Name.Contains(query, StringComparison.OrdinalIgnoreCase)).ToList();
+            WinKeyAppsList.ItemsSource = allApps.Take(20).ToList();
+            WinKeyAppsSection.Visibility = allApps.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        }
+        else
+        {
+            WinKeyAppsList.ItemsSource = null;
+            WinKeyAppsSection.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    private void WinKeyApp_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: GameEntry game }) return;
+        CloseTaskSwitcher();
+        if (game.IsApplication) LaunchApplication(game);
+        else LaunchGame(game);
+    }
+
+    private void ShowTaskSwitcher() => ShowWinKeyOverlay();
 
     private static List<TaskWindowEntry> GetTaskWindows(IntPtr shellHandle)
     {
@@ -2372,6 +3119,46 @@ public partial class MainWindow : Window
         _taskThumbnails.Clear();
         TaskSwitcherOverlay.Visibility = Visibility.Collapsed;
         TaskWindowList.ItemsSource = null;
+        WinKeyAppsList.ItemsSource = null;
+        WinKeyWindowsSection.Visibility = Visibility.Collapsed;
+        WinKeyAppsSection.Visibility = Visibility.Collapsed;
+        WinKeyEmptyHint.Visibility = Visibility.Collapsed;
+        WinKeySearchBox.Text = string.Empty;
+        Topmost = false;
+        RestorePreviousForegroundWindow();
+    }
+
+    private void CapturePreviousForegroundWindow()
+    {
+        var foreground = GetForegroundWindow();
+        if (foreground != IntPtr.Zero && foreground != new WindowInteropHelper(this).Handle)
+            _previousForegroundWindow = foreground;
+    }
+
+    private void RestorePreviousForegroundWindow()
+    {
+        if (_suppressFocusRestore || _previousForegroundWindow == IntPtr.Zero) return;
+        var target = _previousForegroundWindow;
+        _previousForegroundWindow = IntPtr.Zero;
+        _suppressFocusRestore = false;
+        try
+        {
+            if (IsWindow(target))
+            {
+                ShowWindow(target, 9);
+                BringWindowToTop(target);
+                var foregroundThread = GetWindowThreadProcessId(GetForegroundWindow(), out _);
+                var targetThread = GetWindowThreadProcessId(target, out _);
+                var currentThread = GetCurrentThreadId();
+                if (foregroundThread != currentThread) AttachThreadInput(currentThread, foregroundThread, true);
+                if (targetThread != currentThread) AttachThreadInput(currentThread, targetThread, true);
+                SetForegroundWindow(target);
+            }
+        }
+        catch (Exception exception)
+        {
+            ErrorLogStore.Log(exception.Message, "Restore foreground", exception.ToString());
+        }
     }
 
     private static bool IsTaskSwitcherWindow(IntPtr handle, IntPtr shellHandle)
@@ -2379,8 +3166,15 @@ public partial class MainWindow : Window
         // Do not reject a window just because it has an owner. WinUI, Chromium and other
         // modern desktop applications frequently use owned top-level windows for their
         // primary UI (ChatGPT is one example).
-        if (handle == shellHandle || !IsWindowVisible(handle)) return false;
-        if (DwmGetWindowAttribute(handle, 14, out int cloaked, sizeof(int)) == 0 && cloaked != 0) return false;
+        if (handle == shellHandle) return false;
+        bool minimized = IsIconic(handle);
+        if (!IsWindowVisible(handle) && !minimized) return false;
+        // Cloak values: 1 = cloaked by the app (hidden), 2 = cloaked by the shell
+        // (UWP/WinUI frames like Settings). Minimized windows also report as cloaked.
+        // Only reject genuinely app-cloaked windows that aren't minimized so hidden
+        // browser windows and shell-cloaked UWP apps (Settings, Calculator) still show.
+        if (DwmGetWindowAttribute(handle, 14, out int cloaked, sizeof(int)) == 0 &&
+            cloaked == 1 && !minimized) return false;
         var extendedStyle = GetWindowLong(handle, -20);
         if ((extendedStyle & 0x08000000) != 0) return false;
         if (!GetWindowRect(handle, out var rectangle) || rectangle.Right - rectangle.Left < 100 ||
@@ -2425,9 +3219,171 @@ public partial class MainWindow : Window
         else CloseTaskSwitcher();
     }
 
+    private void ShowAltTabOverlay()
+    {
+        if (_altTabActive) return;
+        _altTabActive = true;
+        var shellHandle = new WindowInteropHelper(this).Handle;
+        _altTabWindows = GetTaskWindows(shellHandle).ToList();
+        if (_altTabWindows.Count == 0) { _altTabActive = false; return; }
+
+        Topmost = true;
+        SetForegroundWindow(new WindowInteropHelper(this).Handle);
+        _altTabIndex = 0;
+        CapturePreviousForegroundWindow();
+        _suppressFocusRestore = false;
+        AltTabStripList.ItemsSource = null;
+        AltTabStripList.ItemsSource = _altTabWindows;
+        AltTabOverlay.Visibility = Visibility.Visible;
+        UpdateAltTabSelection();
+        Dispatcher.BeginInvoke(() =>
+        {
+            UpdateLayout();
+            RegisterAltTabStripThumbnails();
+            UpdateAltTabStripHighlight();
+        }, DispatcherPriority.Loaded);
+    }
+
+    private void CompleteAltTab()
+    {
+        if (!_altTabActive || _altTabWindows.Count == 0) return;
+        var window = _altTabWindows[_altTabIndex];
+        ActivateTaskWindow(window);
+    }
+
+    private void CycleAltTabSelection()
+    {
+        if (!_altTabActive || _altTabWindows.Count == 0) return;
+        _altTabIndex = (_altTabIndex + 1) % _altTabWindows.Count;
+        UpdateAltTabSelection();
+    }
+
+    private void UpdateAltTabSelection()
+    {
+        if (_altTabWindows.Count == 0) return;
+        var window = _altTabWindows[_altTabIndex];
+        AltTabWindowTitle.Text = window.Title;
+        AltTabWindowProcess.Text = window.ProcessName;
+        RegisterAltTabThumbnail(window);
+        UpdateAltTabStripHighlight();
+    }
+
+    private void UpdateAltTabStripHighlight()
+    {
+        var cards = FindVisualChildren<Border>(AltTabStripList)
+            .Where(border => border.Name == "AltTabStripCard").ToList();
+        for (var i = 0; i < cards.Count; i++)
+        {
+            var selected = i == _altTabIndex;
+            cards[i].BorderBrush = selected
+                ? new SolidColorBrush((Color)ColorConverter.ConvertFromString("#FF003C"))
+                : new SolidColorBrush((Color)ColorConverter.ConvertFromString("#10FFFFFF"));
+            cards[i].BorderThickness = selected ? new Thickness(2) : new Thickness(1.5);
+            cards[i].Background = selected
+                ? new SolidColorBrush((Color)ColorConverter.ConvertFromString("#26FF003C"))
+                : new SolidColorBrush((Color)ColorConverter.ConvertFromString("#10FFFFFF"));
+        }
+    }
+
+    private void RegisterAltTabStripThumbnails()
+    {
+        foreach (var thumbnail in _altTabStripThumbnails) DwmUnregisterThumbnail(thumbnail);
+        _altTabStripThumbnails.Clear();
+        var destination = new WindowInteropHelper(this).Handle;
+        var dpi = VisualTreeHelper.GetDpi(this);
+        foreach (var preview in FindVisualChildren<Border>(AltTabStripList)
+                     .Where(border => border.Tag is TaskWindowEntry && border.IsVisible))
+        {
+            var window = (TaskWindowEntry)preview.Tag;
+            if (DwmRegisterThumbnail(destination, window.Handle, out var thumbnail) != 0 || thumbnail == IntPtr.Zero)
+                continue;
+            var properties = new DwmThumbnailProperties
+            {
+                Flags = 0x1 | 0x4 | 0x8 | 0x10,
+                Destination = GetThumbnailRect16To9(preview, dpi.DpiScaleX, dpi.DpiScaleY),
+                Opacity = 255,
+                Visible = true,
+                SourceClientAreaOnly = false
+            };
+            DwmUpdateThumbnailProperties(thumbnail, ref properties);
+            _altTabStripThumbnails.Add(thumbnail);
+        }
+    }
+
+    private NativeRect GetThumbnailRect16To9(FrameworkElement target, double dpiScaleX, double dpiScaleY)
+    {
+        var point = target.TransformToAncestor(this).Transform(new Point(0, 0));
+        var w = target.ActualWidth;
+        var h = target.ActualHeight;
+        const double ratio = 16.0 / 9.0;
+        double nw, nh;
+        if (w / h > ratio)
+        {
+            nw = h * ratio;
+            nh = h;
+        }
+        else
+        {
+            nw = w;
+            nh = w / ratio;
+        }
+        return new NativeRect
+        {
+            Left = (int)Math.Round((point.X + (w - nw) / 2) * dpiScaleX),
+            Top = (int)Math.Round((point.Y + (h - nh) / 2) * dpiScaleY),
+            Right = (int)Math.Round((point.X + (w + nw) / 2) * dpiScaleX),
+            Bottom = (int)Math.Round((point.Y + (h + nh) / 2) * dpiScaleY)
+        };
+    }
+
+    private void RegisterAltTabThumbnail(TaskWindowEntry window)
+    {
+        if (_altTabThumbnail != IntPtr.Zero) DwmUnregisterThumbnail(_altTabThumbnail);
+        _altTabThumbnail = IntPtr.Zero;
+        var destination = new WindowInteropHelper(this).Handle;
+        if (DwmRegisterThumbnail(destination, window.Handle, out var thumbnail) != 0 || thumbnail == IntPtr.Zero)
+            return;
+        var dpi = VisualTreeHelper.GetDpi(this);
+        var point = AltTabPreview.TransformToAncestor(this).Transform(new Point(0, 0));
+        var properties = new DwmThumbnailProperties
+        {
+            Flags = 0x1 | 0x4 | 0x8 | 0x10,
+            Destination = new NativeRect
+            {
+                Left = (int)Math.Round(point.X * dpi.DpiScaleX),
+                Top = (int)Math.Round(point.Y * dpi.DpiScaleY),
+                Right = (int)Math.Round((point.X + AltTabPreview.ActualWidth) * dpi.DpiScaleX),
+                Bottom = (int)Math.Round((point.Y + AltTabPreview.ActualHeight) * dpi.DpiScaleY)
+            },
+            Opacity = 255,
+            Visible = true,
+            SourceClientAreaOnly = false
+        };
+        DwmUpdateThumbnailProperties(thumbnail, ref properties);
+        _altTabThumbnail = thumbnail;
+    }
+
+    private void CloseAltTabOverlay()
+    {
+        if (_altTabThumbnail != IntPtr.Zero) DwmUnregisterThumbnail(_altTabThumbnail);
+        _altTabThumbnail = IntPtr.Zero;
+        foreach (var thumbnail in _altTabStripThumbnails) DwmUnregisterThumbnail(thumbnail);
+        _altTabStripThumbnails.Clear();
+        AltTabStripList.ItemsSource = null;
+        AltTabOverlay.Visibility = Visibility.Collapsed;
+        _altTabActive = false;
+        if (TaskSwitcherOverlay.Visibility != Visibility.Visible)
+        {
+            Topmost = false;
+            RestorePreviousForegroundWindow();
+        }
+    }
+
     private void ActivateTaskWindow(TaskWindowEntry window)
     {
+        _suppressFocusRestore = true;
         CloseTaskSwitcher();
+        CloseAltTabOverlay();
         Topmost = false;
         ShowWindow(window.Handle, 9);
         BringWindowToTop(window.Handle);
@@ -2447,6 +3403,7 @@ public partial class MainWindow : Window
             if (targetThread != currentThread) AttachThreadInput(currentThread, targetThread, false);
             if (foregroundThread != currentThread) AttachThreadInput(currentThread, foregroundThread, false);
         }
+        _suppressFocusRestore = false;
     }
 
     private void RegisterTaskThumbnails()
@@ -2512,8 +3469,9 @@ public partial class MainWindow : Window
 
     private void UpdateTaskControllerPrompts()
     {
-        var controllerActive = _inputSettings.InputMethod == "Controller" && _controller.IsConnected;
-        TaskControllerPrompts.Visibility = controllerActive ? Visibility.Visible : Visibility.Collapsed;
+        var controllerActive = _controller.IsConnected;
+        ControllerGuideBar.Visibility = controllerActive && _inputSettings.ShowButtonGuide ? Visibility.Visible : Visibility.Collapsed;
+        TaskControllerPrompts.Visibility = controllerActive && TaskSwitcherOverlay.Visibility == Visibility.Visible ? Visibility.Visible : Visibility.Collapsed;
         if (!controllerActive) return;
 
         var profile = _inputSettings.Controllers.TryGetValue(_controller.ConnectedControllerName, out var saved)
@@ -2521,8 +3479,21 @@ public partial class MainWindow : Window
             : new ControllerProfile();
         var accept = profile.Bindings.GetValueOrDefault(ControllerCommand.Accept, ControllerButton.A);
         var back = profile.Bindings.GetValueOrDefault(ControllerCommand.Back, ControllerButton.B);
+        var previousTab = profile.Bindings.GetValueOrDefault(ControllerCommand.PreviousTab, ControllerButton.LeftShoulder);
+        var nextTab = profile.Bindings.GetValueOrDefault(ControllerCommand.NextTab, ControllerButton.RightShoulder);
         TaskAcceptButtonGlyph.Text = ControllerButtonGlyph(accept, _controller.ConnectedControllerName);
         TaskBackButtonGlyph.Text = ControllerButtonGlyph(back, _controller.ConnectedControllerName);
+        GuideAcceptGlyph.Text = ControllerButtonGlyph(accept, _controller.ConnectedControllerName);
+        GuidePreviousTabGlyph.Text = ControllerButtonGlyph(previousTab, _controller.ConnectedControllerName);
+        GuideNextTabGlyph.Text = ControllerButtonGlyph(nextTab, _controller.ConnectedControllerName);
+        var backGlyph = ControllerButtonGlyph(back, _controller.ConnectedControllerName);
+        GuideBackGlyph.Text = backGlyph;
+        ConnectionsBackButton.Content = backGlyph;
+        DetailsBackButton.Content = backGlyph;
+        ErrorLogBackButton.Content = backGlyph;
+        BackupSettingsBackButton.Content = backGlyph;
+        PowerBackButton.Content = backGlyph;
+        SettingsBackButton.Content = backGlyph;
     }
 
     private static string ControllerButtonGlyph(ControllerButton button, string controllerName)
@@ -2555,65 +3526,81 @@ public partial class MainWindow : Window
         };
     }
 
+    private void FlashBackButton()
+    {
+        Button? btn = null;
+        if (ConnectionsOverlay.Visibility == Visibility.Visible) btn = ConnectionsBackButton;
+        else if (ErrorLogOverlay.Visibility == Visibility.Visible) btn = ErrorLogBackButton;
+        else if (BackupSettingsOverlay.Visibility == Visibility.Visible) btn = BackupSettingsBackButton;
+        else if (PowerOverlay.Visibility == Visibility.Visible) btn = PowerBackButton;
+        else if (SettingsOverlay.Visibility == Visibility.Visible) btn = SettingsBackButton;
+        else if (GameDetailsPage.Visibility == Visibility.Visible) btn = DetailsBackButton;
+        if (btn is null) return;
+        var transform = new ScaleTransform(1.3, 1.3, 0.5, 0.5);
+        btn.RenderTransform = transform;
+        var animScaleX = new DoubleAnimation(1.3, 1.0, TimeSpan.FromMilliseconds(200)) { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut } };
+        var animScaleY = new DoubleAnimation(1.3, 1.0, TimeSpan.FromMilliseconds(200)) { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut } };
+        transform.BeginAnimation(ScaleTransform.ScaleXProperty, animScaleX);
+        transform.BeginAnimation(ScaleTransform.ScaleYProperty, animScaleY);
+    }
+
     private void ControllerBack()
     {
-        if (ConnectionsOverlay.Visibility == Visibility.Visible) ConnectionsOverlay.Visibility = Visibility.Collapsed;
+        FlashBackButton();
+        if (AccessoriesOverlay.Visibility == Visibility.Visible) AccessoriesOverlay.Visibility = Visibility.Collapsed;
+        else if (ConnectionsOverlay.Visibility == Visibility.Visible) ConnectionsOverlay.Visibility = Visibility.Collapsed;
         else if (TaskSwitcherOverlay.Visibility == Visibility.Visible) CloseTaskSwitcher();
         else if (ErrorLogOverlay.Visibility == Visibility.Visible) CloseErrorLog();
         else if (MetadataCorrectionOverlay.Visibility == Visibility.Visible)
             CancelMetadataCorrection_Click(this, new RoutedEventArgs());
+        else if (BackupSettingsOverlay.Visibility == Visibility.Visible) CloseBackupSettings();
         else if (GameSearchHost.Visibility == Visibility.Visible &&
                  (GameSearchBox.IsKeyboardFocusWithin || !string.IsNullOrWhiteSpace(GameSearchBox.Text))) CloseGameSearch();
         else if (GameDetailsPage.Visibility == Visibility.Visible) CloseGameDetails();
         else if (PowerOverlay.Visibility == Visibility.Visible) ClosePowerOptions();
         else if (SettingsOverlay.Visibility == Visibility.Visible &&
-                 (ControllerSettingsPanel.Visibility == Visibility.Visible ||
+                 (OsSettingsPanel.Visibility == Visibility.Visible ||
+                  ControllerSettingsPanel.Visibility == Visibility.Visible ||
                   MetadataSettingsPanel.Visibility == Visibility.Visible ||
-                  NetworkSettingsPanel.Visibility == Visibility.Visible))
+                  NetworkSettingsPanel.Visibility == Visibility.Visible ||
+                  ControllerCalibrationPanel.Visibility == Visibility.Visible ||
+                  AddMetadataSourcePanel.Visibility == Visibility.Visible ||
+                  RemoveSourceListPanel.Visibility == Visibility.Visible ||
+                  RemoveMetadataSourcePanel.Visibility == Visibility.Visible ||
+                  BackgroundSettingsPanel.Visibility == Visibility.Visible))
             BackToSettingsHome_Click(this, new RoutedEventArgs());
         else if (SettingsOverlay.Visibility == Visibility.Visible) CloseSettings();
         else if (!_homeSelected) ShowHomePage();
     }
 
-    private void SelectControllerTab(bool applications)
+    private static readonly IEasingFunction IosSettle = new QuinticEase { EasingMode = EasingMode.EaseOut };
+
+    private static TranslateTransform EnsureTranslate(UIElement element)
     {
-        _homeSelected = false;
-        _applicationsSelected = applications;
-        _homeHoverLocked = false;
-        GamesList.IsHitTestVisible = true;
-        LibraryScroller.Visibility = applications ? Visibility.Collapsed : Visibility.Visible;
-        ApplicationScroller.Visibility = applications ? Visibility.Visible : Visibility.Collapsed;
-        ContinuePlayingPanel.Visibility = Visibility.Collapsed;
-        QuickLaunchHost.Visibility = applications ? Visibility.Collapsed : Visibility.Visible;
-        PerformanceModeHost.Visibility = applications ? Visibility.Collapsed : Visibility.Visible;
-        LibraryFilters.Visibility = applications ? Visibility.Collapsed : Visibility.Visible;
-        ApplicationFilters.Visibility = applications ? Visibility.Visible : Visibility.Collapsed;
-        ApplicationPagination.Visibility = applications ? Visibility.Visible : Visibility.Collapsed;
-        System.Windows.Automation.AutomationProperties.SetName(RefreshButton,
-            applications ? "Rescan applications" : "Rescan games");
-        GameSearchBox.Text = string.Empty;
-        GameSearchHost.Visibility = Visibility.Visible;
-        GameSearchHost.Margin = applications ? new Thickness(0, 0, 0, 578) : new Thickness(0, 0, 0, 349);
-        GameLibraryHeader.Foreground = applications ? CreateFrozenBrush("#8A8A8A") : Brushes.White;
-        ApplicationsHeader.Foreground = applications ? Brushes.White : CreateFrozenBrush("#8A8A8A");
-        if (applications) UpdateApplicationRunningStates();
-        var items = applications
-            ? _applications.OrderByDescending(app => app.IsRunning).ThenBy(app => app.Name, StringComparer.OrdinalIgnoreCase).ToList()
-            : _allGames.Where(game => !game.IsHidden).ToList();
-        if (applications) ApplicationList.ItemsSource = items;
-        else GamesList.ItemsSource = items;
-        SetEmptyLibrary(items.Count == 0,
-            applications ? "NO APPLICATIONS FOUND" : "NO GAMES FOUND",
-            applications ? "No supported Quick Launch applications were detected." : "Refresh the library to scan again.");
-        StatusText.Text = applications ? $"{items.Count} APPLICATIONS READY" : $"{items.Count} GAMES READY";
-        if (applications) ApplyApplicationFilter();
-        else ApplyLibraryFilters();
-        var firstGame = FindVisualChildren<Button>(applications ? ApplicationList : GamesList).FirstOrDefault(button => button.IsVisible);
-        if (!applications && firstGame is not null) firstGame.Focus();
+        if (element.RenderTransform is TranslateTransform transform) return transform;
+        transform = new TranslateTransform();
+        element.RenderTransform = transform;
+        return transform;
     }
 
-    private void GameLibraryHeader_Click(object sender, MouseButtonEventArgs e) => SelectControllerTab(false);
-    private void ApplicationsHeader_Click(object sender, MouseButtonEventArgs e) => SelectControllerTab(true);
+    private static async Task PanPageInAsync(FrameworkElement page, double direction, bool animate)
+    {
+        if (!animate || direction == 0 || page.ActualWidth <= 0) return;
+        var transform = EnsureTranslate(page);
+        var travel = Math.Max(720, page.ActualWidth);
+        transform.X = direction * travel;
+        page.IsHitTestVisible = false;
+        try
+        {
+            await AnimateAsync(transform, TranslateTransform.XProperty, transform.X, 0, 450, IosSettle);
+        }
+        finally
+        {
+            page.IsHitTestVisible = true;
+        }
+    }
+
+    private void GameLibraryHeader_Click(object sender, MouseButtonEventArgs e) => ShowHomePage();
 
     private void OmenBrand_Click(object sender, MouseButtonEventArgs e) => ShowHomePage();
 
@@ -2624,22 +3611,18 @@ public partial class MainWindow : Window
         if (PowerOverlay.Visibility == Visibility.Visible) ClosePowerOptions();
         if (SettingsOverlay.Visibility == Visibility.Visible) CloseSettings();
         GameSearchBox.Text = string.Empty;
-        _homeSelected = false;
-        _applicationsSelected = false;
+        _homeSelected = true;
         _homeHoverLocked = false;
         GamesList.IsHitTestVisible = true;
         LibraryScroller.Visibility = Visibility.Visible;
-        ApplicationScroller.Visibility = Visibility.Collapsed;
-        ContinuePlayingPanel.Visibility = Visibility.Collapsed;
+        UpdateContinuePlaying();
         GameLibraryHeader.Foreground = Brushes.White;
-        ApplicationsHeader.Foreground = CreateFrozenBrush("#8A8A8A");
         GamesList.ItemsSource = _allGames.Where(game => !game.IsHidden).ToList();
         GameSearchHost.Visibility = Visibility.Visible;
-        QuickLaunchHost.Visibility = Visibility.Visible;
         PerformanceModeHost.Visibility = Visibility.Visible;
+        MediaControlsBar.Visibility = Visibility.Visible;
+        NotificationsHost.Visibility = Visibility.Visible;
         LibraryFilters.Visibility = Visibility.Visible;
-        ApplicationFilters.Visibility = Visibility.Collapsed;
-        ApplicationPagination.Visibility = Visibility.Collapsed;
         System.Windows.Automation.AutomationProperties.SetName(RefreshButton, "Rescan games");
         var visibleGameCount = _allGames.Count(game => !game.IsHidden);
         SetEmptyLibrary(visibleGameCount == 0, "NO GAMES FOUND", "Refresh the library to scan again.");
@@ -2704,6 +3687,10 @@ public partial class MainWindow : Window
     private static extern bool EnumWindows(EnumWindowsProcedure callback, IntPtr parameter);
     [DllImport("user32.dll")]
     private static extern bool IsWindowVisible(IntPtr window);
+    [DllImport("user32.dll")]
+    private static extern bool IsWindow(IntPtr window);
+    [DllImport("user32.dll")]
+    private static extern bool IsIconic(IntPtr window);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetWindowText(IntPtr window, System.Text.StringBuilder text, int maximumCount);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
@@ -2758,6 +3745,22 @@ public partial class MainWindow : Window
         public int Size;
     }
 
+    private sealed class BackgroundChoice
+    {
+        public BackgroundChoice(string name, ImageSource? thumb, bool isCurrent, string path)
+        {
+            Name = name;
+            Thumb = thumb;
+            IsCurrent = isCurrent;
+            Path = path;
+        }
+
+        public string Name { get; }
+        public ImageSource? Thumb { get; }
+        public bool IsCurrent { get; }
+        public string Path { get; }
+    }
+
     [StructLayout(LayoutKind.Sequential)]
     private struct NativeRect
     {
@@ -2777,4 +3780,109 @@ public partial class MainWindow : Window
         [MarshalAs(UnmanagedType.Bool)] public bool Visible;
         [MarshalAs(UnmanagedType.Bool)] public bool SourceClientAreaOnly;
     }
+
+    private void ListScroll_Changed(object sender, ScrollChangedEventArgs e)
+    {
+        if (sender is ScrollViewer sv)
+            UpdateScrollArrow(sv);
+    }
+
+    private void UpdateScrollArrow(ScrollViewer sv)
+    {
+        var arrow = sv.Name switch
+        {
+            "AccessoriesScroll" => /* AccessoriesScrollArrow */ null,
+            "NotificationsScroll" => NotificationsScrollArrow,
+            "ClipboardScroll" => ClipboardScrollArrow,
+            _ => null
+        };
+        if (arrow != null)
+            arrow.Visibility = sv.VerticalOffset + sv.ViewportHeight < sv.ExtentHeight - 2
+                ? Visibility.Visible : Visibility.Collapsed;
+
+        var parent = sv.Parent as Grid;
+        if (parent != null)
+        {
+            var sibling = parent.Children.OfType<TextBlock>()
+                .FirstOrDefault(t => t.Name.EndsWith("ScrollArrow"));
+            if (sibling != null)
+                sibling.Visibility = sv.VerticalOffset + sv.ViewportHeight < sv.ExtentHeight - 2
+                    ? Visibility.Visible : Visibility.Collapsed;
+        }
+    }
+
+    private void CheckListBoxArrows()
+    {
+        CheckListBoxArrow(WifiNetworksList, WifiScrollArrow);
+        CheckListBoxArrow(BluetoothDevicesList, BluetoothScrollArrow);
+    }
+
+    private void CheckListBoxArrow(ListBox lb, TextBlock arrow)
+    {
+        if (lb == null || arrow == null) return;
+        var sv = FindVisualChildren<ScrollViewer>(lb).FirstOrDefault();
+        if (sv != null)
+            arrow.Visibility = sv.VerticalOffset + sv.ViewportHeight < sv.ExtentHeight - 2
+                ? Visibility.Visible : Visibility.Collapsed;
+        else
+            arrow.Visibility = Visibility.Collapsed;
+    }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -3,11 +3,11 @@ using System.Windows.Threading;
 
 namespace OmenGamingShell;
 
-public enum ControllerCommand { Up, Down, Left, Right, Accept, Back, PreviousTab, NextTab, Settings, Power }
+public enum ControllerCommand { Up, Down, Left, Right, Accept, Back, PreviousTab, NextTab, PreviousPage, NextPage, Settings, Power }
 
 public sealed class ControllerInput : IDisposable
 {
-    private readonly DispatcherTimer _timer = new() { Interval = TimeSpan.FromMilliseconds(16) };
+    private readonly DispatcherTimer _timer = new(DispatcherPriority.Input) { Interval = TimeSpan.FromMilliseconds(16) };
     private RawState _previous;
     private ControllerCommand? _heldDirection;
     private DateTime _nextRepeat;
@@ -37,27 +37,47 @@ public sealed class ControllerInput : IDisposable
 
     public void TestVibration()
     {
-        if (!_profile.VibrationEnabled || _xInputIndex is null) return;
-        XInputSetState(_xInputIndex.Value, new XInputVibration { LeftMotor = 18000, RightMotor = 26000 });
-        var stop = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(180) };
-        stop.Tick += (_, _) => { stop.Stop(); XInputSetState(_xInputIndex.Value, default); };
-        stop.Start();
+        // XInputSetState raises a hardware access violation (uncatchable corrupted-state
+        // exception) with some OEM XInput filter drivers, killing the whole shell.
+        // Vibration therefore stays disabled until a safe backend replaces raw XInput.
     }
 
     private void Poll(object? sender, EventArgs e)
     {
+        try
+        {
+            if (GetForegroundWindow() != _shellHandle) return;
+            PollCore();
+        }
+        catch (Exception exception)
+        {
+            LastInput = $"Input error: {exception.Message}";
+        }
+    }
+
+    public void SetShellHandle(IntPtr handle) => _shellHandle = handle;
+
+    private IntPtr _shellHandle;
+
+    private void PollCore()
+    {
         var current = ReadXInput() ?? ReadJoystick() ?? default;
+        var connectionChanged = current.Connected != IsConnected;
+        var stateChanged = current.Buttons != _previous.Buttons || current.X != _previous.X || current.Y != _previous.Y;
         IsConnected = current.Connected;
         ConnectedControllerName = current.Name ?? "No controller connected";
         LeftXPercent = current.X;
         LeftYPercent = current.Y;
-        StateChanged?.Invoke();
+        if (connectionChanged || stateChanged)
+            StateChanged?.Invoke();
         if (!IsEnabled) { _previous = current; return; }
 
         EmitEdge(current.Up, _previous.Up, ControllerCommand.Up, "D-pad / Stick Up");
         EmitEdge(current.Down, _previous.Down, ControllerCommand.Down, "D-pad / Stick Down");
         EmitEdge(current.Left, _previous.Left, ControllerCommand.Left, "D-pad / Stick Left");
         EmitEdge(current.Right, _previous.Right, ControllerCommand.Right, "D-pad / Stick Right");
+        EmitEdge(current.LeftTrigger, _previous.LeftTrigger, ControllerCommand.PreviousPage, "Left Trigger");
+        EmitEdge(current.RightTrigger, _previous.RightTrigger, ControllerCommand.NextPage, "Right Trigger");
         foreach (var binding in _profile.Bindings.Where(binding => binding.Key != ControllerCommand.Accept))
             EmitEdge(current.IsPressed(binding.Value), _previous.IsPressed(binding.Value), binding.Key, binding.Value.ToString());
         var acceptButton = _profile.Bindings.GetValueOrDefault(ControllerCommand.Accept, ControllerButton.A);
@@ -89,11 +109,11 @@ public sealed class ControllerInput : IDisposable
 
         ControllerCommand? direction = current.Up ? ControllerCommand.Up : current.Down ? ControllerCommand.Down :
             current.Left ? ControllerCommand.Left : current.Right ? ControllerCommand.Right : null;
-        if (direction != _heldDirection) { _heldDirection = direction; _nextRepeat = DateTime.UtcNow.AddMilliseconds(360); }
+        if (direction != _heldDirection) { _heldDirection = direction; _nextRepeat = DateTime.UtcNow.AddMilliseconds(220); }
         else if (direction is not null && DateTime.UtcNow >= _nextRepeat)
         {
             Command?.Invoke(direction.Value);
-            _nextRepeat = DateTime.UtcNow.AddMilliseconds(95);
+            _nextRepeat = DateTime.UtcNow.AddMilliseconds(65);
         }
         _previous = current;
     }
@@ -108,27 +128,36 @@ public sealed class ControllerInput : IDisposable
 
     private RawState? ReadXInput()
     {
+        if (_xInputIndex is { } cached && XInputGetState(cached, out var cachedState) == 0)
+        {
+            try { if (XInputGetStateEx(cached, out var extended) == 0) cachedState = extended; }
+            catch (EntryPointNotFoundException) { }
+            return BuildXInputState(cached, cachedState);
+        }
         for (uint index = 0; index < 4; index++)
         {
             if (XInputGetState(index, out var state) != 0) continue;
-            try
-            {
-                if (XInputGetStateEx(index, out var extended) == 0) state = extended;
-            }
+            try { if (XInputGetStateEx(index, out var extended) == 0) state = extended; }
             catch (EntryPointNotFoundException) { }
             _xInputIndex = index;
-            var threshold = 32767 * Math.Clamp(_profile.DeadZonePercent, 5, 60) / 100;
-            var b = state.Gamepad.Buttons;
-            return new RawState(true, $"Xbox / XInput Controller {index + 1}", true,
-                (b & 1) != 0 || state.Gamepad.LeftThumbY > threshold,
-                (b & 2) != 0 || state.Gamepad.LeftThumbY < -threshold,
-                (b & 4) != 0 || state.Gamepad.LeftThumbX < -threshold,
-                (b & 8) != 0 || state.Gamepad.LeftThumbX > threshold,
-                (int)Math.Round(state.Gamepad.LeftThumbX / 32767d * 100),
-                (int)Math.Round(state.Gamepad.LeftThumbY / 32767d * 100), b, (b & 0x0400) != 0);
+            return BuildXInputState(index, state);
         }
         _xInputIndex = null;
         return null;
+    }
+
+    private RawState BuildXInputState(uint index, XInputState state)
+    {
+        var threshold = 32767 * Math.Clamp(_profile.DeadZonePercent, 5, 60) / 100;
+        var b = state.Gamepad.Buttons;
+        return new RawState(true, $"Xbox / XInput Controller {index + 1}", true,
+            (b & 1) != 0 || state.Gamepad.LeftThumbY > threshold,
+            (b & 2) != 0 || state.Gamepad.LeftThumbY < -threshold,
+            (b & 4) != 0 || state.Gamepad.LeftThumbX < -threshold,
+            (b & 8) != 0 || state.Gamepad.LeftThumbX > threshold,
+            (int)Math.Round(state.Gamepad.LeftThumbX / 32767d * 100),
+            (int)Math.Round(state.Gamepad.LeftThumbY / 32767d * 100), b, (b & 0x0400) != 0,
+            state.Gamepad.LeftTrigger >= 30, state.Gamepad.RightTrigger >= 30);
     }
 
     private RawState? ReadJoystick()
@@ -151,15 +180,15 @@ public sealed class ControllerInput : IDisposable
                 pov is >= 13500 and <= 22500 || y < -threshold,
                 pov is >= 22500 and <= 31500 || x < -threshold,
                 pov is >= 4500 and <= 13500 || x > threshold, x, y, info.Buttons,
-                (info.Buttons & 0x1000) != 0);
+                (info.Buttons & 0x1000) != 0, false, false);
         }
         return null;
     }
 
-    public void Dispose() { _timer.Stop(); if (_xInputIndex is not null) XInputSetState(_xInputIndex.Value, default); }
+    public void Dispose() { _timer.Stop(); }
 
     private readonly record struct RawState(bool Connected, string? Name, bool NativeXInput, bool Up, bool Down, bool Left, bool Right,
-        int X, int Y, uint Buttons, bool Guide)
+        int X, int Y, uint Buttons, bool Guide, bool LeftTrigger, bool RightTrigger)
     {
         public bool IsPressed(ControllerButton button) => button switch
         {
@@ -192,8 +221,12 @@ public sealed class ControllerInput : IDisposable
     [DllImport("xinput1_4.dll")] private static extern uint XInputGetState(uint userIndex, out XInputState state);
     [DllImport("xinput1_4.dll", EntryPoint = "#100")]
     private static extern uint XInputGetStateEx(uint userIndex, out XInputState state);
-    [DllImport("xinput1_4.dll")] private static extern uint XInputSetState(uint userIndex, XInputVibration vibration);
     [DllImport("winmm.dll")] private static extern uint joyGetNumDevs();
     [DllImport("winmm.dll")] private static extern uint joyGetPosEx(uint joystickId, ref JoyInfoEx info);
     [DllImport("winmm.dll", CharSet = CharSet.Unicode)] private static extern uint joyGetDevCaps(uint joystickId, ref JoyCaps capabilities, uint size);
+    [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
 }
+
+
+
+

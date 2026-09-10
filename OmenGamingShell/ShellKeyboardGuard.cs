@@ -18,8 +18,10 @@ public sealed class ShellKeyboardGuard : IDisposable
     private bool _windowsKeyDown;
     public event Action? WindowsKeyPressed;
     public event Action? AltTabPressed;
+    public event Action? AltTabRepeated;
     public event Action? AltReleased;
-    private bool _altTabDown;
+    private bool _altTabSessionActive;
+    private bool _altHeld;
 
     public ShellKeyboardGuard(IntPtr windowHandle)
     {
@@ -37,13 +39,31 @@ public sealed class ShellKeyboardGuard : IDisposable
         {
             var key = Marshal.ReadInt32(data);
             var isDown = message.ToInt32() is 0x0100 or 0x0104;
+            if (key is VkMenu or VkLeftMenu or VkRightMenu)
+            {
+                _altHeld = isDown;
+                if (!isDown)
+                {
+                    _altTabSessionActive = false;
+                    AltReleased?.Invoke();
+                }
+            }
             if (key == VkTab && (GetAsyncKeyState(VkMenu) & 0x8000) != 0)
             {
-                if (isDown && !_altTabDown) AltTabPressed?.Invoke();
-                _altTabDown = isDown;
+                if (isDown)
+                {
+                    if (!_altTabSessionActive)
+                    {
+                        _altTabSessionActive = true;
+                        AltTabPressed?.Invoke();
+                    }
+                    else
+                    {
+                        AltTabRepeated?.Invoke();
+                    }
+                }
                 return new IntPtr(1);
             }
-            if (key is VkMenu or VkLeftMenu or VkRightMenu && !isDown) AltReleased?.Invoke();
             if (key is VkLeftWindows or VkRightWindows)
             {
                 if (isDown && !_windowsKeyDown) WindowsKeyPressed?.Invoke();

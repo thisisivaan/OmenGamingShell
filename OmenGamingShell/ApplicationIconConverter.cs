@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.IO;
 using System.Reflection;
@@ -12,9 +13,23 @@ namespace OmenGamingShell;
 
 public sealed class ApplicationIconConverter : IValueConverter
 {
+    // Icon extraction is expensive (COM + Win32 shell calls). Cache the results so
+    // re-realizing the apps grid on every page switch doesn't re-extract every icon
+    // on the UI thread, which previously stalled the apps page and froze all other
+    // shell animations (overlays, slideshow, cover grid) for the duration.
+    private static readonly ConcurrentDictionary<string, ImageSource> IconCache = new(StringComparer.OrdinalIgnoreCase);
+
     public object? Convert(object value, Type targetType, object parameter, CultureInfo culture)
     {
         if (value is not string path || string.IsNullOrWhiteSpace(path)) return null;
+        if (IconCache.TryGetValue(path, out var cached)) return cached;
+        var extracted = Extract(path);
+        if (extracted is not null) IconCache[path] = extracted;
+        return extracted;
+    }
+
+    private static ImageSource? Extract(string path)
+    {
         if (File.Exists(path) && IsImageFile(path))
         {
             try

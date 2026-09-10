@@ -10,3 +10,17 @@ build/
 # Self-contained installer payload (regenerate with scripts/build-installer.ps1)
 OmenGamingShell.Installer/Payload/app/
 OmenGamingShell.Installer/Payload/OmenGamingShell.zip
+
+# Local publish output copied to the repo root
+/OmenGamingShell.exe
+/OmenGamingShell.dll
+/OmenGamingShell.pdb
+/OmenGamingShell.deps.json
+/OmenGamingShell.runtimeconfig.json
+/D3DCompiler_47_cor3.dll
+/Microsoft.Windows.SDK.NET.dll
+/PenImc_cor3.dll
+/PresentationNative_cor3.dll
+/WinRT.Runtime.dll
+/wpfgfx_cor3.dll
+/vcruntime140_cor3.dll

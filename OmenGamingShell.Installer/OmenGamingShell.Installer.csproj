@@ -1,24 +1,19 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
     <UseWPF>true</UseWPF>
-    <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+    <ApplicationIcon>Assets\omen-icon.ico</ApplicationIcon>
     <AssemblyName>OmenGamingShellInstaller</AssemblyName>
     <RootNamespace>OmenGamingShell.Installer</RootNamespace>
-    <ApplicationIcon>..\OmenGamingShell\Assets\omen-icon.ico</ApplicationIcon>
-    <PublishSingleFile>true</PublishSingleFile>
-    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
-    <DebugType>none</DebugType>
-    <Product>OMEN Gaming Shell Installer</Product>
-    <FileDescription>OMEN Gaming Shell Installer</FileDescription>
-    <Company>OMEN Gaming Shell</Company>
     <Version>1.0.0</Version>
+    <AssemblyTitle>OMEN Gaming Shell Installer</AssemblyTitle>
+    <Description>Installer for OMEN Gaming Shell</Description>
   </PropertyGroup>
   <ItemGroup>
-    <Resource Include="..\OmenGamingShell\Assets\omen-wordmark-mask.png" Link="Assets\omen-wordmark-mask.png" />
-    <Resource Include="..\OmenGamingShell\Assets\omen-icon.png" Link="Assets\omen-icon.png" />
-    <Resource Include="Payload\OmenGamingShell.zip" />
+    <EmbeddedResource Include="Payload\OmenGamingShell.zip" Condition="Exists('Payload\OmenGamingShell.zip')" />
+    <Resource Include="Assets\omen-icon.ico" />
   </ItemGroup>
 </Project>

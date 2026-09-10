@@ -12,12 +12,15 @@ public partial class App : System.Windows.Application
         AppDomain.CurrentDomain.UnhandledException += (_, args) =>
             WriteCrash(args.ExceptionObject as Exception ?? new Exception("Unknown fatal error"));
         base.OnStartup(e);
+        System.Windows.Window shell = SetupStateStore.IsSetupComplete() ? new MainWindow() : new SetupWindow();
+        MainWindow = shell;
+        shell.Show();
     }
 
     private void HandleCrash(object sender, DispatcherUnhandledExceptionEventArgs e)
     {
         WriteCrash(e.Exception);
-        try { Process.Start(new ProcessStartInfo("explorer.exe") { UseShellExecute = true }); } catch { }
+                e.Handled = true;
     }
 
     private static void WriteCrash(Exception exception)
@@ -34,3 +37,6 @@ public partial class App : System.Windows.Application
         catch { }
     }
 }
+
+
+

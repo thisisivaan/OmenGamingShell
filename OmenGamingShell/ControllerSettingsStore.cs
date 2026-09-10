@@ -21,7 +21,9 @@ public sealed class ControllerProfile
 public sealed class InputSettings
 {
     public string InputMethod { get; set; } = "Controller";
+    public string DefaultDesktop { get; set; } = "Windows";
     public bool GuideOpensHomeWhileGaming { get; set; } = true;
+    public bool ShowButtonGuide { get; set; } = true;
     public bool NavigationAudioEnabled { get; set; } = true;
     public int NavigationAudioVolume { get; set; } = 35;
     public string PerformanceMode { get; set; } = "Balanced";
@@ -53,3 +55,9 @@ public static class ControllerSettingsStore
 }
 
 public enum ControllerButton { A, B, X, Y, LeftShoulder, RightShoulder, Menu, View }
+
+
+
+
+
+

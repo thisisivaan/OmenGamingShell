@@ -15,7 +15,7 @@ public static class NavigationSound
             _ => (520, 35)
         };
         _activeSound = CreateWave(frequency, duration, Math.Clamp(volume, 0, 100));
-        PlaySound(_activeSound, IntPtr.Zero, 0x0002 | 0x0004);
+        PlaySound(_activeSound, IntPtr.Zero, 0x0001 | 0x0002 | 0x0004);
     }
 
     private static byte[] CreateWave(int frequency, int milliseconds, int volume)
@@ -42,3 +42,4 @@ public static class NavigationSound
     [DllImport("winmm.dll", SetLastError = true)]
     private static extern bool PlaySound(byte[] sound, IntPtr module, uint flags);
 }
+
