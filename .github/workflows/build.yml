@@ -40,7 +40,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: OmenGamingShell-win-x64
-          path: OmenGamingShell\bin\Release\net8.0-windows\win-x64\publish\OmenGamingShell.exe
+          path: OmenGamingShell\bin\Release\net8.0-windows10.0.19041.0\win-x64\publish\OmenGamingShell.exe
           if-no-files-found: error
 
   release:
