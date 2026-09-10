@@ -8,7 +8,7 @@
     <ApplicationIcon>Assets\omen-icon.ico</ApplicationIcon>
     <AssemblyName>OmenGamingShellInstaller</AssemblyName>
     <RootNamespace>OmenGamingShell.Installer</RootNamespace>
-    <Version>1.0.1</Version>
+    <Version>1.0.3</Version>
     <AssemblyTitle>OMEN Gaming Shell Installer</AssemblyTitle>
     <Description>Installer for OMEN Gaming Shell</Description>
   </PropertyGroup>
