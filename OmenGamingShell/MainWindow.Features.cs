@@ -282,13 +282,23 @@ public partial class MainWindow
             grid.Children.Add(icon);
             grid.Children.Add(stack);
             item.Child = grid;
+            if (string.Equals(n.Tag, UpdateNotificationTag, StringComparison.Ordinal))
+            {
+                item.Cursor = Cursors.Hand;
+                item.MouseLeftButtonUp += (_, _) => OpenUpdateFromNotificationAsync();
+            }
             NotificationsList.Children.Add(item);
         }
         NotificationsEmpty.Visibility = NotificationCenter.Items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void CloseNotificationCenter(object sender, RoutedEventArgs e) => NotificationCenterOverlay.Visibility = Visibility.Collapsed;
-    private void ClearNotifications_Click(object sender, RoutedEventArgs e) { NotificationCenter.Clear(); PopulateNotifications(); }
+    private void ClearNotifications_Click(object sender, RoutedEventArgs e)
+    {
+        if (NotificationCenter.HasTag(UpdateNotificationTag)) _updateDismissedThisSession = true;
+        NotificationCenter.Clear();
+        PopulateNotifications();
+    }
 
     // === CLIPBOARD HISTORY ===
     private void OpenClipboardHistory()

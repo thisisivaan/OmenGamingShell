@@ -615,8 +615,6 @@
                                                    HorizontalAlignment="Center" Margin="0,1,0,0" />
                                     </StackPanel>
                                 </StackPanel>
-                                <TextBlock x:Name="AccessoriesEmptyText" Text="No devices" Foreground="#707070" FontSize="9"
-                                           HorizontalAlignment="Center" Margin="0,4,0,0" />
                             </StackPanel>
                         </Border>
                     </Grid>
@@ -1770,6 +1768,18 @@
         <Button x:Name="UpdateNowButton" Style="{StaticResource LibraryFilterButton}" Content="UPDATE NOW" Width="170" Height="40" Margin="0,0,12,0" Click="UpdateNow_Click" />
         <Button x:Name="UpdateLaterButton" Style="{StaticResource LibraryFilterButton}" Content="NOT NOW" Width="170" Height="40" Click="UpdateLater_Click" />
       </StackPanel>
+    </StackPanel>
+  </Border>
+</Grid>
+
+<!-- Downloading Update Overlay -->
+<Grid x:Name="UpdateProgressOverlay" Grid.RowSpan="3" Margin="-52,-34" Background="#F2050505" Visibility="Collapsed" IsHitTestVisible="True">
+  <Border Width="420" Background="#0D0D0D" CornerRadius="14" Padding="28" HorizontalAlignment="Center" VerticalAlignment="Center">
+    <StackPanel>
+      <TextBlock Text="DOWNLOADING UPDATE" FontSize="16" FontWeight="SemiBold" Foreground="#E0E0E0" HorizontalAlignment="Center" />
+      <TextBlock x:Name="UpdateProgressText" FontSize="12" Foreground="#909090" HorizontalAlignment="Center" Margin="0,6,0,0" />
+      <ProgressBar IsIndeterminate="True" Height="6" Margin="0,20,0,0" Foreground="#4C9AFF" Background="#20FFFFFF" />
+      <TextBlock Text="The shell will restart automatically when the update is ready. Don't turn off your PC." FontSize="11" Foreground="#707070" TextWrapping="Wrap" TextAlignment="Center" HorizontalAlignment="Center" Margin="0,16,0,0" />
     </StackPanel>
   </Border>
 </Grid>

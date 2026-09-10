@@ -32,8 +32,11 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _wifiScanTimer = new() { Interval = TimeSpan.FromSeconds(8) };
     private readonly DispatcherTimer _deviceScanTimer = new() { Interval = TimeSpan.FromSeconds(10) };
     private readonly DispatcherTimer _taskViewHotCornerTimer = new() { Interval = TimeSpan.FromMilliseconds(250) };
+    private const string UpdateNotificationTag = "update";
+    private const string UpdateNotificationIcon = "\uE895";
     private readonly DispatcherTimer _updateCheckTimer = new() { Interval = TimeSpan.FromHours(1) };
     private bool _updateCheckInProgress;
+    private bool _updateDismissedThisSession;
     private UpdateReleaseInfo? _pendingRelease;
     private readonly ControllerInput _controller = new();
     private MetadataSettings _metadataSettings = new();
@@ -123,7 +126,7 @@ public partial class MainWindow : Window
             else
                 _wifiScanTimer.Stop();
         };
-        _deviceScanTimer.Tick += async (_, _) => { await RefreshConnectedDevicesAsync(); await RefreshAccessoriesAsync(); };
+        _deviceScanTimer.Tick += async (_, _) => { await RefreshConnectedDevicesAsync(); };
         _taskViewHotCornerTimer.Tick += (_, _) =>
         {
             _taskViewHotCornerTimer.Stop();
@@ -145,7 +148,6 @@ public partial class MainWindow : Window
         LoadBackgroundSettings();
         LoadMetadataSettings();
         _ = LoadGamesAsync();
-        _ = RefreshAccessoriesAsync();
         RefreshErrorLog();
         _ = RefreshConnectedDevicesAsync();
         _deviceScanTimer.Start();
@@ -286,19 +288,6 @@ public partial class MainWindow : Window
         catch { return false; }
     }
 
-    private async Task RefreshAccessoriesAsync()
-    {
-        try
-        {
-            var devices = await Task.Run(() => ConnectedDeviceScanner.Scan());
-            Dispatcher.BeginInvoke(() =>
-            {
-                // AccessoriesList removed - items managed by overlay
-                AccessoriesEmptyText.Visibility = devices.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-            });
-        }
-        catch { Dispatcher.BeginInvoke(() => AccessoriesEmptyText.Visibility = Visibility.Visible); }
-    }
     private sealed class BackupDriveEntry
     {
         public string Root { get; init; } = string.Empty;
@@ -1102,17 +1091,21 @@ try
 
     private async Task CheckForUpdateAsync(bool silent)
     {
-        if (_updateCheckInProgress || UpdateOverlay.Visibility == Visibility.Visible) return;
+        if (_updateCheckInProgress || _updateDismissedThisSession) return;
         _updateCheckInProgress = true;
         try
         {
             var release = await UpdateChecker.FetchLatestReleaseAsync();
             if (release is null) return;
-            if (!UpdateChecker.IsUpdateAvailable(CurrentAppVersion, release)) return;
             _pendingRelease = release;
-            ShowNotification($"Update available: v{release.Version}");
-            await Task.Delay(TimeSpan.FromSeconds(1.5));
-            ShowUpdatePrompt(release);
+            if (!UpdateChecker.IsUpdateAvailable(CurrentAppVersion, release))
+            {
+                NotificationCenter.RemoveTag(UpdateNotificationTag);
+                return;
+            }
+            if (NotificationCenter.HasTag(UpdateNotificationTag))
+                NotificationCenter.RemoveTag(UpdateNotificationTag);
+            NotificationCenter.Push("Update available", $"v{release.Version} is ready to install", UpdateNotificationIcon, UpdateNotificationTag);
         }
         catch (Exception exception)
         {
@@ -1135,23 +1128,37 @@ try
     private void UpdateLater_Click(object sender, RoutedEventArgs e)
     {
         UpdateOverlay.Visibility = Visibility.Collapsed;
-        _pendingRelease = null;
+        _updateDismissedThisSession = true;
     }
 
     private async void UpdateNow_Click(object sender, RoutedEventArgs e)
     {
         UpdateOverlay.Visibility = Visibility.Collapsed;
         var release = _pendingRelease;
-        _pendingRelease = null;
         if (release is null) return;
-        ShowNotification("Downloading update...");
+        UpdateProgressText.Text = $"v{release.Version} is downloading...";
+        UpdateProgressOverlay.Visibility = Visibility.Visible;
         var ready = await UpdateChecker.DownloadAndApplyAsync(release);
         if (!ready)
         {
+            UpdateProgressOverlay.Visibility = Visibility.Collapsed;
             ShowNotification("Update failed. Try again later");
             return;
         }
         Application.Current.Shutdown();
+    }
+
+    private async void OpenUpdateFromNotificationAsync()
+    {
+        NotificationCenterOverlay.Visibility = Visibility.Collapsed;
+        var release = _pendingRelease;
+        if (release is null)
+        {
+            release = await UpdateChecker.FetchLatestReleaseAsync();
+            if (release is null || !UpdateChecker.IsUpdateAvailable(CurrentAppVersion, release)) return;
+            _pendingRelease = release;
+        }
+        ShowUpdatePrompt(release);
     }
 
     private void UpdateContinuePlaying()
@@ -2586,6 +2593,8 @@ try
         else if (ReferenceEquals(sender, AccessoriesOverlay)) AccessoriesOverlay.Visibility = Visibility.Collapsed;
         else if (ReferenceEquals(sender, MetadataCorrectionOverlay))
             CancelMetadataCorrection_Click(this, new RoutedEventArgs());
+        else if (ReferenceEquals(sender, NotificationCenterOverlay)) NotificationCenterOverlay.Visibility = Visibility.Collapsed;
+        else if (ReferenceEquals(sender, UpdateOverlay)) UpdateOverlay.Visibility = Visibility.Collapsed;
     }
 
     private void CloseSettings()
