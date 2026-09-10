@@ -37,6 +37,31 @@ jobs:
       - name: Publish (win-x64, self-contained, single file)
         run: dotnet publish .\OmenGamingShell\OmenGamingShell.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
 
+      - name: Smoke test (launch exe, fail on crash)
+        shell: pwsh
+        run: |
+          $exe = 'OmenGamingShell\bin\Release\net8.0-windows10.0.19041.0\win-x64\publish\OmenGamingShell.exe'
+          if (-not (Test-Path $exe)) { Write-Error "Missing $exe"; exit 1 }
+          function Count-CrashEvents {
+            $n = 0
+            try {
+              $n = (Get-WinEvent -FilterHashtable @{LogName='Application'; ProviderName='.NET Runtime'} -MaxEvents 300 -ErrorAction Stop |
+                    Where-Object { $_.Message -like '*OmenGamingShell.exe*' }).Count
+            } catch { }
+            return $n
+          }
+          $before = Count-CrashEvents
+          $p = Start-Process -FilePath $exe -PassThru
+          Start-Sleep -Seconds 20
+          $alive = Get-Process -Id $p.Id -ErrorAction SilentlyContinue
+          $after = Count-CrashEvents
+          if ($alive) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
+          Write-Host "Smoke: alive=$([bool]$alive) crashLogsBefore=$before crashLogsAfter=$after"
+          if (-not $alive -or $after -gt $before) {
+            Write-Error 'Smoke test failed: published exe crashed on launch.'
+            exit 1
+          }
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:

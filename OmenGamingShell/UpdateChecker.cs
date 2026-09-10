@@ -66,6 +66,23 @@ public static class UpdateChecker
                remote > current;
     }
 
+    public static bool IsVersionBlocked(string version)
+    {
+        try
+        {
+            var path = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "OmenGamingShell", "blocked-versions.json");
+            if (!File.Exists(path)) return false;
+            var list = JsonSerializer.Deserialize<List<string>>(File.ReadAllText(path));
+            return list?.Contains(version) == true;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
     public static async Task<bool> DownloadAsync(string url, string destinationPath)
     {
         try
@@ -102,7 +119,8 @@ public static class UpdateChecker
             await File.WriteAllTextAsync(scriptPath, BuildApplyScript());
             var processId = Environment.ProcessId;
             var arguments = $"-NoProfile -ExecutionPolicy Bypass -File \"{scriptPath}\" " +
-                            $"-WaitPid {processId} -InstallExe \"{installExe}\" -NewExe \"{newExe}\" -UpdateDir \"{updateDir}\"";
+                            $"-WaitPid {processId} -InstallExe \"{installExe}\" -NewExe \"{newExe}\" " +
+                            $"-UpdateDir \"{updateDir}\" -Version \"{release.Version}\"";
             Process.Start(new ProcessStartInfo("powershell.exe", arguments) { UseShellExecute = true });
             return true;
         }
@@ -119,18 +137,19 @@ param(
     [string]$InstallExe,
     [string]$NewExe,
     [string]$UpdateDir,
+    [string]$Version,
     [switch]$Elevated
 )
 $log = Join-Path $UpdateDir 'update.log'
 function Write-Log([string]$m) {
     try { Add-Content -LiteralPath $log -Value ("[{0}] {1}" -f (Get-Date -Format o), $m) } catch {}
 }
-Write-Log "Started. Install=$InstallExe New=$NewExe"
+Write-Log "Started. Install=$InstallExe New=$NewExe Version=$Version"
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin -and -not $Elevated) {
     Write-Log 'Requesting elevation.'
     try {
-        $relaunch = "-NoProfile -ExecutionPolicy Bypass -File `"{0}`" -WaitPid {1} -InstallExe `"{2}`" -NewExe `"{3}`" -UpdateDir `"{4}`" -Elevated" -f $MyInvocation.MyCommand.Path, $WaitPid, $InstallExe, $NewExe, $UpdateDir
+        $relaunch = "-NoProfile -ExecutionPolicy Bypass -File `"{0}`" -WaitPid {1} -InstallExe `"{2}`" -NewExe `"{3}`" -UpdateDir `"{4}`" -Version `"{5}`" -Elevated" -f $MyInvocation.MyCommand.Path, $WaitPid, $InstallExe, $NewExe, $UpdateDir, $Version
         Start-Process -FilePath 'powershell.exe' -ArgumentList $relaunch -Verb RunAs
         Write-Log 'Elevation started.'
     } catch {
@@ -141,22 +160,73 @@ if (-not $isAdmin -and -not $Elevated) {
 Write-Log 'Waiting for the shell to exit...'
 while (Get-Process -Id $WaitPid -ErrorAction SilentlyContinue) { Start-Sleep -Milliseconds 500 }
 Start-Sleep -Seconds 2
+
+$backupExe = "$InstallExe.bak"
+function Backup-CurrentExe {
+    try {
+        Copy-Item -LiteralPath $InstallExe -Destination $backupExe -Force
+        Write-Log "Backed up current exe: $backupExe"
+        return $true
+    } catch {
+        Write-Log "Backup failed: $($_.Exception.Message)"
+        return $false
+    }
+}
+function Record-BlockedVersion([string]$v) {
+    if ([string]::IsNullOrWhiteSpace($v)) { return }
+    $blockPath = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'OmenGamingShell\blocked-versions.json'
+    try {
+        $dir = Split-Path -Parent $blockPath
+        if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+        $blocked = @()
+        if (Test-Path -LiteralPath $blockPath) {
+            try { $blocked = @(Get-Content -LiteralPath $blockPath -Raw | ConvertFrom-Json) } catch { $blocked = @() }
+        }
+        if ($blocked -notcontains $v) { $blocked += $v }
+        $blocked | ConvertTo-Json | Set-Content -LiteralPath $blockPath
+        Write-Log "Recorded blocked version $v"
+    } catch {
+        Write-Log "Block-list write failed: $($_.Exception.Message)"
+    }
+}
+
+if (-not (Backup-CurrentExe)) {
+    Remove-Item -LiteralPath $UpdateDir -Recurse -Force -ErrorAction SilentlyContinue
+    exit 1
+}
+
 try {
     Copy-Item -LiteralPath $NewExe -Destination $InstallExe -Force
     Write-Log "Replaced: $InstallExe"
 } catch {
     Write-Log "Copy failed: $($_.Exception.Message)"
+    try { if (Test-Path -LiteralPath $backupExe) { Copy-Item -LiteralPath $backupExe -Destination $InstallExe -Force; Write-Log 'Restored backup after copy failure.' } } catch {}
     Remove-Item -LiteralPath $UpdateDir -Recurse -Force -ErrorAction SilentlyContinue
     exit 1
 }
+
 Start-Sleep -Milliseconds 500
-Remove-Item -LiteralPath $UpdateDir -Recurse -Force -ErrorAction SilentlyContinue
-if (Test-Path -LiteralPath $InstallExe) {
-    Start-Process -FilePath $InstallExe -WorkingDirectory (Split-Path -Parent $InstallExe)
-    Write-Log 'Launched updated shell.'
-} else {
-    Write-Log 'Install exe not found after update.'
+$proc = Start-Process -FilePath $InstallExe -WorkingDirectory (Split-Path -Parent $InstallExe) -PassThru
+Write-Log "Launched updated shell (pid $($proc.Id)). Watching for 30s..."
+$deadline = (Get-Date).AddSeconds(30)
+while (-not $proc.HasExited -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+if ($proc.HasExited) {
+    Write-Log "Updated shell exited prematurely (exit $($proc.ExitCode)). Rolling back."
+    Record-BlockedVersion $Version
+    try {
+        Copy-Item -LiteralPath $backupExe -Destination $InstallExe -Force
+        Write-Log "Restored previous version: $InstallExe"
+        Start-Process -FilePath $InstallExe -WorkingDirectory (Split-Path -Parent $InstallExe)
+        Write-Log 'Launched previous version.'
+    } catch {
+        Write-Log "Rollback failed: $($_.Exception.Message)"
+    }
+    Remove-Item -LiteralPath $UpdateDir -Recurse -Force -ErrorAction SilentlyContinue
+    exit 1
 }
+Remove-Item -LiteralPath $backupExe -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $UpdateDir -Recurse -Force -ErrorAction SilentlyContinue
+Write-Log 'Update applied successfully.'
 exit 0
 """;
 }

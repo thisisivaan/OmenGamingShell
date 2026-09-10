@@ -44,8 +44,8 @@ public static class ClipboardHistory
             _items.Insert(0, new ClipboardEntry(text, DateTime.Now));
             if (_items.Count > 30) _items.RemoveAt(_items.Count - 1);
             _dirty = true;
-            _saveTimer.Stop();
-            _saveTimer.Start();
+            _saveTimer?.Stop();
+            _saveTimer?.Start();
             Updated?.Invoke();
         }
         catch { }
@@ -60,8 +60,8 @@ public static class ClipboardHistory
             _items.Insert(0, new ClipboardEntry(text, DateTime.Now));
             if (_items.Count > 30) _items.RemoveAt(_items.Count - 1);
             _dirty = true;
-            _saveTimer.Stop();
-            _saveTimer.Start();
+            _saveTimer?.Stop();
+            _saveTimer?.Start();
             Updated?.Invoke();
         }
         catch { }

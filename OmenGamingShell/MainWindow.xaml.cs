@@ -62,7 +62,6 @@ public partial class MainWindow : Window
     private WifiNetwork? _pendingWifiNetwork;
     private IReadOnlyList<BluetoothDevice> _cachedBluetoothDevices = Array.Empty<BluetoothDevice>();
     private bool _wifiScanInProgress;
-    private bool _deviceScanInProgress;
     private IReadOnlyList<TaskWindowEntry> _winKeyWindows = Array.Empty<TaskWindowEntry>();
     private IReadOnlyList<TaskWindowEntry> _altTabWindows = Array.Empty<TaskWindowEntry>();
     private int _altTabIndex;
@@ -251,7 +250,7 @@ public partial class MainWindow : Window
             var success = await Task.Run(() => EjectDrive(driveLetter));
             if (success)
             {
-                ShowNotification($"Drive {driveLetter} ejected safely");
+                Notify($"Drive {driveLetter} ejected safely", "Drive ejected", $"{driveLetter} was ejected safely", IconEject);
                 _backupDriveRoot = null;
                 SaveBackupSettings();
                 RefreshBackupDrives();
@@ -302,7 +301,7 @@ try
             if (!File.Exists(BackupSettingsPath)) return;
             using var document = JsonDocument.Parse(File.ReadAllText(BackupSettingsPath));
             if (document.RootElement.TryGetProperty("folders", out var folders))
-                _backupFolders.AddRange(folders.EnumerateArray().Select(item => item.GetString()).Where(item => !string.IsNullOrWhiteSpace(item))!.Distinct(StringComparer.OrdinalIgnoreCase));
+                _backupFolders.AddRange(folders.EnumerateArray().Select(item => item.GetString()).OfType<string>().Where(item => !string.IsNullOrWhiteSpace(item)).Distinct(StringComparer.OrdinalIgnoreCase));
             if (document.RootElement.TryGetProperty("automatic", out var automatic)) _automaticBackupEnabled = automatic.GetBoolean();
             if (document.RootElement.TryGetProperty("drive", out var drive)) _backupDriveRoot = drive.GetString();
         }
@@ -349,9 +348,9 @@ try
         try
         {
             var devices = await Task.Run(() => ConnectedDeviceScanner.Scan());
-            Dispatcher.BeginInvoke(() => AccessoriesFullList.ItemsSource = devices);
+            _ = Dispatcher.BeginInvoke(() => AccessoriesFullList.ItemsSource = devices);
         }
-        catch { Dispatcher.BeginInvoke(() => AccessoriesFullList.ItemsSource = Array.Empty<ConnectedDeviceEntry>()); }
+        catch { _ = Dispatcher.BeginInvoke(() => AccessoriesFullList.ItemsSource = Array.Empty<ConnectedDeviceEntry>()); }
     }
 
     private void CloseAccessoriesOverlay(object sender, RoutedEventArgs e)
@@ -364,7 +363,7 @@ try
         try
         {
             var devices = await Task.Run(() => ConnectedDeviceScanner.Scan());
-            Dispatcher.BeginInvoke(() => AccessoriesFullList.ItemsSource = devices);
+            _ = Dispatcher.BeginInvoke(() => AccessoriesFullList.ItemsSource = devices);
         }
         catch { }
     }
@@ -722,11 +721,11 @@ try
         try
         {
             var games = await Task.Run(() => GameLibrary.Load());
-            Dispatcher.BeginInvoke(() => DisplayGames(games));
+            _ = Dispatcher.BeginInvoke(() => DisplayGames(games));
         }
         catch (Exception exception)
         {
-            Dispatcher.BeginInvoke(() =>
+            _ = Dispatcher.BeginInvoke(() =>
             {
                 EmptyLibrary.Visibility = Visibility.Visible;
                 StatusText.Text = exception.Message.ToUpperInvariant();
@@ -750,7 +749,8 @@ try
 
             _allGames = games;
             DisplayGames(games);
-            ShowNotification($"{newGames.Count} new game{(newGames.Count == 1 ? string.Empty : "s")} detected");
+            var howMany = newGames.Count == 1 ? "1 new game" : $"{newGames.Count} new games";
+            Notify($"{howMany} detected", "New games found", $"{howMany} detected in your library", IconAdd);
         }
         catch
         {
@@ -1081,6 +1081,17 @@ try
         _notificationTimer.Start();
     }
 
+    private const string IconNetwork = "\uE701";
+    private const string IconEject = "\uE72D";
+    private const string IconAdd = "\uE8B7";
+    private const string IconAudio = "\uE7F5";
+
+    private void Notify(string toast, string title, string message, string icon = "\uE7BA")
+    {
+        ShowNotification(toast);
+        NotificationCenter.Push(title, message, icon);
+    }
+
     private string CurrentAppVersion => Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "0.0.0";
 
     private async Task RunStartupUpdateCheckAsync()
@@ -1099,6 +1110,11 @@ try
             if (release is null) return;
             _pendingRelease = release;
             if (!UpdateChecker.IsUpdateAvailable(CurrentAppVersion, release))
+            {
+                NotificationCenter.RemoveTag(UpdateNotificationTag);
+                return;
+            }
+            if (UpdateChecker.IsVersionBlocked(release.Version))
             {
                 NotificationCenter.RemoveTag(UpdateNotificationTag);
                 return;
@@ -1143,6 +1159,7 @@ try
         {
             UpdateProgressOverlay.Visibility = Visibility.Collapsed;
             ShowNotification("Update failed. Try again later");
+            NotificationCenter.Push("Update failed", "The update could not be installed. Your current version is unaffected.", UpdateNotificationIcon);
             return;
         }
         Application.Current.Shutdown();
@@ -1391,7 +1408,7 @@ try
                 GameSessionState.Closed => $"{game.Name.ToUpperInvariant()} CLOSED  •  PLAYED {FormatPlayTime(duration)}",
                 _ => $"FAILED TO DETECT {game.Name.ToUpperInvariant()}"
             };
-            if (state == GameSessionState.Failed) ShowNotification($"Game launch failed: {game.Name}");
+            if (state == GameSessionState.Failed) Notify($"Game launch failed: {game.Name}", "Game launch failed", $"{game.Name} could not be launched");
             if (state == GameSessionState.Closed)
             {
                 Show();
@@ -1792,8 +1809,12 @@ try
         var choices = _allGames
             .Where(game => !game.IsApplication && !game.IsHidden && !string.IsNullOrWhiteSpace(game.Background) && File.Exists(game.Background))
             .OrderBy(game => game.Name, StringComparer.OrdinalIgnoreCase)
-            .Select(game => new BackgroundChoice(game.Name, LoadLocalImage(game.Background),
-                IsCurrentBackground(game.Background), game.Background))
+            .Select(game =>
+            {
+                var background = game.Background!;
+                return new BackgroundChoice(game.Name, LoadLocalImage(background),
+                    IsCurrentBackground(background), background);
+            })
             .ToList();
         BackgroundChoiceList.ItemsSource = choices;
     }
@@ -1920,7 +1941,7 @@ try
     private async void ConnectWifi_Click(object sender, RoutedEventArgs e)
     {
         if (WifiNetworksList.SelectedItem is not WifiNetwork network) return;
-        try { await ConnectionService.ConnectWifiAsync(network, WifiPasswordBox.Password); ShowNotification($"Connected to {network.Name}"); }
+        try { await ConnectionService.ConnectWifiAsync(network, WifiPasswordBox.Password); Notify($"Connected to {network.Name}", "Wi-Fi connected", $"Connected to {network.Name}", IconNetwork); }
         catch (Exception exception) { ShowNotification($"Wi-Fi connection failed: {exception.Message}"); }
     }
     private async void WifiNetworkAction_Click(object sender, RoutedEventArgs e)
@@ -1931,7 +1952,7 @@ try
             if (network.IsConnected)
             {
                 await ConnectionService.DisconnectWifiAsync();
-                ShowNotification($"Disconnected from {network.Name}");
+                Notify($"Disconnected from {network.Name}", "Wi-Fi disconnected", $"Disconnected from {network.Name}", IconNetwork);
             }
             else
             {
@@ -1944,7 +1965,7 @@ try
                     return;
                 }
                 await ConnectionService.ConnectWifiAsync(network, null);
-                ShowNotification($"Connected to {network.Name}");
+                Notify($"Connected to {network.Name}", "Wi-Fi connected", $"Connected to {network.Name}", IconNetwork);
             }
             await RefreshConnectionsAsync(true);
         }
@@ -1963,7 +1984,7 @@ try
         try
         {
             await ConnectionService.ConnectWifiAsync(network, WifiPasswordBox.Password);
-            ShowNotification($"Connected to {network.Name}");
+            Notify($"Connected to {network.Name}", "Wi-Fi connected", $"Connected to {network.Name}", IconNetwork);
             WifiPasswordBox.Clear();
             WifiPasswordPanel.Visibility = Visibility.Collapsed;
             _pendingWifiNetwork = null;
@@ -1980,14 +2001,20 @@ try
     {
         if (BluetoothDevicesList.SelectedItem is not BluetoothDevice device) return;
         var paired = ConnectionService.PairBluetooth(new WindowInteropHelper(this).Handle, device);
-        ShowNotification(paired ? $"{device.Name} paired" : $"Could not pair {device.Name}");
+        if (paired)
+            Notify($"{device.Name} paired", "Device paired", $"{device.Name} was paired successfully");
+        else
+            ShowNotification($"Could not pair {device.Name}");
         await RefreshConnectionsAsync(false);
     }
     private async void RemoveBluetooth_Click(object sender, RoutedEventArgs e)
     {
         if (BluetoothDevicesList.SelectedItem is not BluetoothDevice device) return;
         var removed = await Task.Run(() => ConnectionService.RemoveBluetooth(device));
-        ShowNotification(removed ? $"{device.Name} removed" : $"Could not remove {device.Name}");
+        if (removed)
+            Notify($"{device.Name} removed", "Device removed", $"{device.Name} was removed");
+        else
+            ShowNotification($"Could not remove {device.Name}");
         await RefreshConnectionsAsync(false);
     }
     private async void BluetoothDeviceAction_Click(object sender, RoutedEventArgs e)
@@ -2919,7 +2946,7 @@ try
                 if (isOnContinue) ci = 0;
                 else if (isOnMedia)
                 {
-                    var mediaIdx = mediaDeps.FindIndex(b => ReferenceEquals(b, focused) || IsAncestorOf(b, focused));
+                    var mediaIdx = mediaDeps.FindIndex(b => ReferenceEquals(b, focused) || IsAncestorOf(b, focused!));
                     ci = mediaIdx + (ContinueHost.Visibility == Visibility.Visible ? 1 : 0);
                 }
                 else if (isOnPerf) ci = zones.IndexOf(PerformanceModeHost);
@@ -2981,13 +3008,8 @@ try
     private void RememberHomeFocus()
     {
         if (!_homeSelected || Keyboard.FocusedElement is not DependencyObject focused) return;
-        if (false)
-            _lastHomeSelection = "Continue";
-        else
-        {
-            var button = FindAncestor<Button>(focused);
-            if (button?.Tag is GameEntry application) _lastHomeSelection = application.Name;
-        }
+        var button = FindAncestor<Button>(focused);
+        if (button?.Tag is GameEntry application) _lastHomeSelection = application.Name;
     }
 
     private void ShowWinKeyOverlay()

@@ -61,6 +61,15 @@ public static class NotificationCenter
 
     public static void Clear() { _items.Clear(); Save(); Updated?.Invoke(); }
 
+    public static void Remove(NotificationEntry entry)
+    {
+        if (_items.Remove(entry))
+        {
+            Save();
+            Updated?.Invoke();
+        }
+    }
+
     private sealed class NotificationEntryDto
     {
         public DateTime Time { get; set; }

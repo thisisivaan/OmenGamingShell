@@ -53,7 +53,7 @@ public partial class MainWindow
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "OmenGamingShell", ".onboarded")))
         {
-            Dispatcher.BeginInvoke(() => ShowOnboarding(), DispatcherPriority.ApplicationIdle);
+            _ = Dispatcher.BeginInvoke(() => ShowOnboarding(), DispatcherPriority.ApplicationIdle);
         }
     }
 
@@ -111,7 +111,7 @@ public partial class MainWindow
                 }
                 catch { }
             }
-            Dispatcher.BeginInvoke(() =>
+            _ = Dispatcher.BeginInvoke(() =>
             {
                 if (media is not null)
                 {
@@ -162,7 +162,7 @@ public partial class MainWindow
         }
         catch
         {
-            Dispatcher.BeginInvoke(() =>
+            _ = Dispatcher.BeginInvoke(() =>
             {
                 MediaControlsBar.Visibility = Visibility.Visible;
                 MediaTitle.Text = "No media playing";
@@ -272,6 +272,7 @@ public partial class MainWindow
             var grid = new Grid();
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(30) });
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(20) });
             var icon = new TextBlock { Text = n.Icon, FontFamily = new FontFamily("Segoe Fluent Icons"), FontSize = 14, Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#A0A0A0")), VerticalAlignment = VerticalAlignment.Center };
             Grid.SetColumn(icon, 0);
             var stack = new StackPanel { Margin = new Thickness(10, 0, 0, 0) };
@@ -281,6 +282,30 @@ public partial class MainWindow
             Grid.SetColumn(stack, 1);
             grid.Children.Add(icon);
             grid.Children.Add(stack);
+            var dismiss = new Button
+            {
+                Content = "\uE8BB",
+                FontFamily = new FontFamily("Segoe Fluent Icons"),
+                FontSize = 10,
+                Width = 20,
+                Height = 20,
+                Padding = new Thickness(0),
+                Background = Brushes.Transparent,
+                BorderThickness = new Thickness(0),
+                Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#606060")),
+                Cursor = Cursors.Hand,
+                VerticalAlignment = VerticalAlignment.Top,
+                ToolTip = "Dismiss"
+            };
+            dismiss.Click += (_, _) =>
+            {
+                if (string.Equals(n.Tag, UpdateNotificationTag, StringComparison.Ordinal))
+                    _updateDismissedThisSession = true;
+                NotificationCenter.Remove(n);
+                PopulateNotifications();
+            };
+            Grid.SetColumn(dismiss, 2);
+            grid.Children.Add(dismiss);
             item.Child = grid;
             if (string.Equals(n.Tag, UpdateNotificationTag, StringComparison.Ordinal))
             {
@@ -493,7 +518,7 @@ public partial class MainWindow
             {
                 var pct = Math.Clamp(vol > 1 ? vol : vol * 100, 0, 100);
                 _currentVolume = pct / 100f;
-                Dispatcher.BeginInvoke(() =>
+                _ = Dispatcher.BeginInvoke(() =>
                 {
                     VolumeBarFill.Width = 48.0 * pct / 100.0;
                     VolumeText.Text = ((int)pct).ToString();
@@ -529,7 +554,7 @@ public partial class MainWindow
             proc?.WaitForExit(3000);
             if (int.TryParse(output, out var bright))
             {
-                Dispatcher.BeginInvoke(() => { BrightnessBarFill.Width = 48.0 * bright / 100.0;
+                _ = Dispatcher.BeginInvoke(() => { BrightnessBarFill.Width = 48.0 * bright / 100.0;
                     BrightnessText.Text = bright.ToString();
                 });
             }
@@ -563,7 +588,7 @@ public partial class MainWindow
     // --- Controller Status Button ---
     private void UpdateControllerIndicator()
     {
-        Dispatcher.BeginInvoke(() =>
+        _ = Dispatcher.BeginInvoke(() =>
         {
             var connected = _controller.IsConnected;
             ControllerIndicatorDot.Fill = connected
@@ -605,8 +630,13 @@ public partial class MainWindow
             var connected = output == "OK";
             if (connected != _lastEarphoneConnected)
             {
+                var wasConnected = _lastEarphoneConnected;
                 _lastEarphoneConnected = connected;
-                Dispatcher.BeginInvoke(() =>
+                if (connected)
+                    Notify("Earphones connected", "Audio device connected", "Earphones or headset detected", IconAudio);
+                else if (wasConnected)
+                    Notify("Earphones disconnected", "Audio device disconnected", "Earphones or headset removed", IconAudio);
+                _ = Dispatcher.BeginInvoke(() =>
                 {
                     EarphoneIndicatorDot.Fill = connected
                         ? new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x00, 0xCC, 0x40))

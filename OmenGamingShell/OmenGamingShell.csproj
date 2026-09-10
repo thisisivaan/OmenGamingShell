@@ -8,7 +8,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>OmenGamingShell</AssemblyName>
     <RootNamespace>OmenGamingShell</RootNamespace>
-    <Version>1.0.3</Version>
+    <Version>1.0.4</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\omen-icon.ico</ApplicationIcon>
   </PropertyGroup>
