@@ -1742,8 +1742,10 @@
                     </StackPanel>
                 </Grid>
             </Border>
+        </Grid>
+
         <!-- Notification Center Overlay -->
-<Grid x:Name="NotificationCenterOverlay" Grid.RowSpan="3" Margin="-52,-34" Background="#E9000000" Visibility="Collapsed" MouseDown="DismissibleOverlay_MouseDown">
+        <Grid x:Name="NotificationCenterOverlay" Grid.RowSpan="3" Margin="-52,-34" Background="#E9000000" Visibility="Collapsed" MouseDown="DismissibleOverlay_MouseDown">
 <Border Width="420" MaxHeight="520" Background="#0D0D0D" CornerRadius="14" Padding="24" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,50,80,0" MouseDown="OverlayContent_MouseDown">
 <StackPanel><Grid Margin="0,0,0,16"><TextBlock Text="NOTIFICATIONS" FontSize="14" FontWeight="SemiBold" Foreground="#A0A0A0" VerticalAlignment="Center"/><Button Style="{StaticResource BackActionButton}" Content="B" Width="32" Height="32" HorizontalAlignment="Left" Click="CloseNotificationCenter"/><Button Content="CLEAR ALL" FontSize="10" Foreground="#707070" Background="Transparent" HorizontalAlignment="Right" Click="ClearNotifications_Click" Cursor="Hand"/></Grid>
 <Grid>
@@ -1864,5 +1866,4 @@
     </StackPanel></Border></Grid>
     </Grid>
 
-        </Grid>
 </Window>
