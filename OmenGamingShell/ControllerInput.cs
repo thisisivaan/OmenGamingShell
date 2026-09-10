@@ -46,7 +46,6 @@ public sealed class ControllerInput : IDisposable
     {
         try
         {
-            if (GetForegroundWindow() != _shellHandle) return;
             PollCore();
         }
         catch (Exception exception)
@@ -70,7 +69,11 @@ public sealed class ControllerInput : IDisposable
         LeftYPercent = current.Y;
         if (connectionChanged || stateChanged)
             StateChanged?.Invoke();
-        if (!IsEnabled) { _previous = current; return; }
+        if (!IsEnabled || GetForegroundWindow() != _shellHandle)
+        {
+            _previous = current;
+            return;
+        }
 
         EmitEdge(current.Up, _previous.Up, ControllerCommand.Up, "D-pad / Stick Up");
         EmitEdge(current.Down, _previous.Down, ControllerCommand.Down, "D-pad / Stick Down");

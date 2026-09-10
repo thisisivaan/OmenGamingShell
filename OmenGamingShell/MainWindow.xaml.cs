@@ -2395,6 +2395,7 @@ try
                 ? $"Controller connected: {_controller.ConnectedControllerName}"
                 : "Controller disconnected");
             _lastControllerConnected = _controller.IsConnected;
+            UpdateTaskControllerPrompts();
         }
         if (_controller.IsConnected && !_controller.ConnectedControllerName.Equals(
                 _appliedControllerName, StringComparison.OrdinalIgnoreCase))

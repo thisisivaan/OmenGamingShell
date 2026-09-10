@@ -20,7 +20,7 @@
         <!-- Step 1: Welcome -->
         <Grid x:Name="Step1_Welcome" Visibility="Visible" Margin="0,40,0,0">
             <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Width="460">
-                <TextBlock Text="OMEN" FontFamily="Segoe Fluent Icons" FontSize="42"
+                <TextBlock Text="OMEN" Style="{StaticResource SectionTitle}" FontSize="42"
                            HorizontalAlignment="Center" Foreground="{StaticResource AccentBrush}"
                            Margin="0,0,0,8" />
                 <TextBlock Text="GAMING SHELL" Style="{StaticResource SectionTitle}"
