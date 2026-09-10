@@ -1,0 +1,61 @@
+name: release-notes
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate version folder and release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          CUR="${{ github.ref_name }}"
+          PREV=$(git tag --sort=-version:refname | grep -v "^${CUR}$" | head -1 || true)
+          mkdir -p "versions/${CUR}"
+          {
+            echo "# ${CUR}"
+            echo
+            echo "_Generated automatically by the release-notes workflow._"
+            echo
+            if [ -n "${PREV}" ]; then
+              echo "## Commits since ${PREV}"
+            else
+              echo "## Commits"
+            fi
+            echo
+            if [ -n "${PREV}" ]; then
+              git log --oneline --no-decorate "${PREV}".."${CUR}"
+            else
+              git log --oneline --no-decorate "${CUR}"
+            fi
+          } > "versions/${CUR}/RELEASE-NOTES.md"
+          cat "versions/${CUR}/RELEASE-NOTES.md"
+
+      - name: Commit and push notes back to main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout main
+          git fetch origin main --quiet
+          git reset --soft origin/main
+          git add "versions/${{ github.ref_name }}/RELEASE-NOTES.md"
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Add release notes for ${{ github.ref_name }}"
+            git push origin main
+          fi

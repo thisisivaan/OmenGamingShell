@@ -12,6 +12,7 @@ permissions:
 
 jobs:
   build:
+    if: github.actor != 'github-actions[bot]'
     runs-on: windows-latest
     steps:
       - name: Checkout
