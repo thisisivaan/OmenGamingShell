@@ -141,7 +141,6 @@ public partial class MainWindow
                         var pct = Math.Min(1.0, media.Position.TotalSeconds / media.Duration.TotalSeconds);
                         MediaProgressBar.Width = pct * 170;
                     }
-                    UpdateDashMedia(media, albumArt);
                 }
                 else
                 {
@@ -156,7 +155,6 @@ public partial class MainWindow
                     MediaPlayBorder.Visibility = Visibility.Collapsed;
                     MediaPrevBorder.Visibility = Visibility.Collapsed;
                     MediaNextBorder.Visibility = Visibility.Collapsed;
-                    UpdateDashMedia(null, null);
                 }
             });
         }
@@ -196,22 +194,6 @@ public partial class MainWindow
         await MediaService.PreviousAsync();
     }
 
-    private void UpdateDashMedia(MediaInfo? media, BitmapImage? albumArt)
-    {
-        if (WinKeyDashboard is null) return;
-        DashMediaTitle.Text = media is null ? "No media playing" : media.Title;
-        DashMediaArtist.Text = media is null ? "" : (media.Artist ?? "");
-        DashMediaPlayButton.Content = media is { IsPlaying: true } ? "PAUSE" : "PLAY";
-        DashMediaPlayButton.Visibility = media is null ? Visibility.Collapsed : Visibility.Visible;
-        if (albumArt is not null) DashMediaArt.Background = new ImageBrush(albumArt);
-        else DashMediaArt.Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#10FFFFFF"));
-    }
-
-    private async void DashMediaPlay_Click(object sender, RoutedEventArgs e)
-    {
-        await MediaService.TogglePlayPauseAsync();
-    }
-
     private static void AnimateButtonFlash(Border border)
     {
         var original = border.Background;
@@ -247,20 +229,9 @@ public partial class MainWindow
     private void RefreshNotificationsContainer()
     {
         var count = NotificationCenter.Items.Count;
-        NotificationsHost.Visibility = count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        if (count > 0) NotificationsHost.Visibility = Visibility.Visible;
         NotificationsHostEmpty.Visibility = count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        if (DashNotificationTitle is null) return;
-        var latest = NotificationCenter.Items.FirstOrDefault();
-        if (latest is not null)
-        {
-            DashNotificationTitle.Text = latest.Title;
-            DashNotificationMessage.Text = latest.Message;
-        }
-        else
-        {
-            DashNotificationTitle.Text = "No notifications";
-            DashNotificationMessage.Text = string.Empty;
-        }
+        NotificationsHostList.ItemsSource = NotificationCenter.Items;
     }
 
     private void PopulateNotifications()

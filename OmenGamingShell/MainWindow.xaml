@@ -50,7 +50,7 @@
                 </Setter.Value>
             </Setter>
         </Style>
-        <Style x:Key="ApplicationContextMenuItem" TargetType="MenuItem">
+        <Style x:Key="GameTileContextMenuItem" TargetType="MenuItem">
             <Setter Property="Foreground" Value="White"/><Setter Property="Background" Value="Transparent"/>
             <Setter Property="Padding" Value="18,10"/><Setter Property="FontSize" Value="12"/>
             <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
@@ -64,7 +64,7 @@
                 </ControlTemplate.Triggers>
             </ControlTemplate></Setter.Value></Setter>
         </Style>
-        <Style x:Key="ApplicationContextMenu" TargetType="ContextMenu">
+        <Style x:Key="GameTileContextMenu" TargetType="ContextMenu">
             <Setter Property="Background" Value="Transparent"/><Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Padding" Value="0"/>
             <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ContextMenu">
@@ -715,12 +715,12 @@
                                     GotKeyboardFocus="Game_GotKeyboardFocus" LostKeyboardFocus="Game_LostKeyboardFocus"
                                     AutomationProperties.Name="{Binding Name}">
                                 <Button.ContextMenu>
-                                    <ContextMenu Style="{StaticResource ApplicationContextMenu}">
-                                        <MenuItem Style="{StaticResource ApplicationContextMenuItem}"
+                                    <ContextMenu Style="{StaticResource GameTileContextMenu}">
+                                        <MenuItem Style="{StaticResource GameTileContextMenuItem}"
                                                   Header="{Binding PlacementTarget.Tag.FavoriteActionLabel, RelativeSource={RelativeSource AncestorType={x:Type ContextMenu}}}"
                                                   Tag="{Binding PlacementTarget.Tag, RelativeSource={RelativeSource AncestorType={x:Type ContextMenu}}}"
                                                   Click="GameFavoriteContext_Click" />
-                                        <MenuItem Style="{StaticResource ApplicationContextMenuItem}"
+                                        <MenuItem Style="{StaticResource GameTileContextMenuItem}"
                                                   Header="{Binding PlacementTarget.Tag.HiddenActionLabel, RelativeSource={RelativeSource AncestorType={x:Type ContextMenu}}}"
                                                   Tag="{Binding PlacementTarget.Tag, RelativeSource={RelativeSource AncestorType={x:Type ContextMenu}}}"
                                                   Click="GameHiddenContext_Click" />
@@ -793,9 +793,15 @@
         </Grid>
 
         <Border x:Name="NotificationToast" Grid.RowSpan="3" HorizontalAlignment="Center" VerticalAlignment="Top"
-                Margin="0,62,0,0" Background="#EE181818" CornerRadius="18" Padding="22,12"
-                MinWidth="280" Visibility="Collapsed" IsHitTestVisible="False">
-            <TextBlock x:Name="NotificationText" FontSize="14" TextWrapping="Wrap" />
+                Margin="0,62,0,0" CornerRadius="18" Padding="22,12"
+                MaxWidth="640" Visibility="Collapsed" IsHitTestVisible="False">
+            <Border.Background>
+                <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                    <GradientStop Color="#F2420C0C" Offset="0" />
+                    <GradientStop Color="#F20B0B0B" Offset="1" />
+                </LinearGradientBrush>
+            </Border.Background>
+            <TextBlock x:Name="NotificationText" FontSize="14" TextWrapping="Wrap" TextAlignment="Center" />
         </Border>
 
         <Border x:Name="ControllerGuideBar" Grid.RowSpan="3" HorizontalAlignment="Center" VerticalAlignment="Bottom"
@@ -818,299 +824,6 @@
                 <TextBlock Text="BACK" Foreground="#A8A8A8" FontSize="11" VerticalAlignment="Center" />
             </StackPanel>
         </Border>
-        <Grid x:Name="TaskSwitcherOverlay" Grid.RowSpan="3" Margin="-52,-34"
-              Visibility="Collapsed" MouseDown="DismissibleOverlay_MouseDown">
-            <Grid.Background>
-                <RadialGradientBrush>
-                    <RadialGradientBrush.GradientStops>
-                        <GradientStop Color="#22151515" Offset="0" />
-                        <GradientStop Color="#E60A0A0A" Offset="0.62" />
-                        <GradientStop Color="#F2050505" Offset="1" />
-                    </RadialGradientBrush.GradientStops>
-                </RadialGradientBrush>
-            </Grid.Background>
-            <Grid Margin="120,60,120,50" MouseDown="TaskSwitcherContent_MouseDown">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="Auto" />
-                </Grid.RowDefinitions>
-
-                <!-- Search bar -->
-                <Grid Grid.Row="0" Height="56" Margin="0,0,0,28">
-                    <Border x:Name="WinKeySearchBorder" CornerRadius="28" Background="#F20F0F0F"
-                            BorderBrush="#14FFFFFF" BorderThickness="1">
-                        <Border.Effect>
-                            <DropShadowEffect BlurRadius="26" ShadowDepth="0" Opacity="0.35" Color="#000000" />
-                        </Border.Effect>
-                        <Grid>
-                            <Border Width="1.5" Height="26" CornerRadius="1" Background="{StaticResource AccentBrush}"
-                                    HorizontalAlignment="Left" VerticalAlignment="Center" Margin="10,0,0,0" />
-                            <TextBlock Text="&#xE721;" FontFamily="Segoe Fluent Icons" FontSize="20" Foreground="#B0B0B0"
-                                       VerticalAlignment="Center" Margin="30,0,0,0" />
-                            <TextBox x:Name="WinKeySearchBox" Background="Transparent" BorderThickness="0"
-                                     FontSize="21" Padding="58,0,24,0" VerticalContentAlignment="Center"
-                                     Foreground="White" CaretBrush="{StaticResource AccentBrush}"
-                                     TextChanged="WinKeySearchBox_TextChanged"
-                                     GotKeyboardFocus="WinKeySearchBox_GotKeyboardFocus"
-                                     LostKeyboardFocus="WinKeySearchBox_LostKeyboardFocus"
-                                     AutomationProperties.Name="Search open windows and apps" />
-                            <TextBlock Text="" x:Name="WinKeySearchGlyph" FontFamily="Segoe Fluent Icons" FontSize="16"
-                                       Foreground="#606060" VerticalAlignment="Center" HorizontalAlignment="Right" Margin="0,0,22,0" />
-                        </Grid>
-                    </Border>
-                </Grid>
-
-                <!-- OPEN WINDOWS section label -->
-                <StackPanel x:Name="WinKeyWindowsSection" Grid.Row="1" Margin="0,0,0,14" Visibility="Collapsed">
-                    <TextBlock Text="O P E N   W I N D O W S" FontSize="11" FontWeight="SemiBold" Foreground="#707070"
-                               Margin="4,0,0,10" />
-                    <ScrollViewer VerticalScrollBarVisibility="Disabled" HorizontalScrollBarVisibility="Auto"
-                                  HorizontalContentAlignment="Left">
-                        <ItemsControl x:Name="TaskWindowList">
-                            <ItemsControl.ItemsPanel>
-                                <ItemsPanelTemplate><StackPanel Orientation="Horizontal" /></ItemsPanelTemplate>
-                            </ItemsControl.ItemsPanel>
-                            <ItemsControl.ItemTemplate>
-                                <DataTemplate>
-                                    <Button Style="{StaticResource TaskWindowCardButton}" Width="196" Height="152" Margin="0,0,12,0"
-                                            Tag="{Binding}" Click="TaskWindow_Click" AutomationProperties.Name="{Binding Title}">
-                                        <Grid Margin="10">
-                                            <Grid.RowDefinitions>
-                                                <RowDefinition Height="96" />
-                                                <RowDefinition Height="*" />
-                                            </Grid.RowDefinitions>
-                                            <Border x:Name="ThumbPreview" Tag="{Binding}" Background="#090909" CornerRadius="8" ClipToBounds="True" />
-                                            <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="4,8,4,0">
-                                                <Image Source="{Binding ExecutablePath, Converter={StaticResource ApplicationIconConverter}}"
-                                                       Width="18" Height="18" Margin="0,0,7,0" VerticalAlignment="Center" />
-                                                <TextBlock Text="{Binding Title}" FontSize="11" FontWeight="SemiBold" VerticalAlignment="Center"
-                                                           TextTrimming="CharacterEllipsis" MaxWidth="145" Foreground="#D0D0D0" />
-                                            </StackPanel>
-                                        </Grid>
-                                    </Button>
-                                </DataTemplate>
-                            </ItemsControl.ItemTemplate>
-                        </ItemsControl>
-                    </ScrollViewer>
-                </StackPanel>
-
-                <!-- APPS & GAMES section label (only when searching) -->
-                <StackPanel x:Name="WinKeyAppsSection" Grid.Row="2" Margin="0,0,0,14" Visibility="Collapsed">
-                    <TextBlock Text="A P P S" FontSize="11" FontWeight="SemiBold" Foreground="#707070"
-                               Margin="4,0,0,10" />
-                    <ScrollViewer VerticalScrollBarVisibility="Disabled" HorizontalScrollBarVisibility="Auto"
-                                  HorizontalContentAlignment="Left">
-                        <ItemsControl x:Name="WinKeyAppsList">
-                            <ItemsControl.ItemsPanel>
-                                <ItemsPanelTemplate><StackPanel Orientation="Horizontal" /></ItemsPanelTemplate>
-                            </ItemsControl.ItemsPanel>
-                            <ItemsControl.ItemTemplate>
-                                <DataTemplate>
-                                    <Button Style="{StaticResource TaskWindowCardButton}" Width="120" Height="130" Margin="0,0,10,0"
-                                            Tag="{Binding}" Click="WinKeyApp_Click" HorizontalContentAlignment="Center">
-                                        <Grid Margin="8">
-                                            <Grid.RowDefinitions>
-                                                <RowDefinition Height="64" />
-                                                <RowDefinition Height="*" />
-                                            </Grid.RowDefinitions>
-                                            <Border Background="#0C0C0C" CornerRadius="12" VerticalAlignment="Center" HorizontalAlignment="Center"
-                                                    Width="56" Height="56">
-                                                <Image Source="{Binding Cover, Converter={StaticResource ApplicationIconConverter}}"
-                                                       Width="40" Height="40" Stretch="Uniform" RenderOptions.BitmapScalingMode="HighQuality"
-                                                       VerticalAlignment="Center" HorizontalAlignment="Center" />
-                                            </Border>
-                                            <TextBlock Grid.Row="1" Text="{Binding Name}" FontSize="11" FontWeight="SemiBold"
-                                                       TextAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="105"
-                                                       VerticalAlignment="Top" Margin="0,4,0,0" Foreground="#D0D0D0" />
-                                        </Grid>
-                                    </Button>
-                                </DataTemplate>
-                            </ItemsControl.ItemTemplate>
-                        </ItemsControl>
-                    </ScrollViewer>
-                </StackPanel>
-
-                <!-- Empty state when no windows and no search -->
-                <TextBlock x:Name="WinKeyEmptyHint" Grid.Row="3" Text="Start typing to search apps" FontSize="15"
-                           Foreground="#505050" HorizontalAlignment="Center" Margin="0,60,0,0" Visibility="Collapsed" />
-
-                <!-- Dashboard widgets -->
-                <Border x:Name="WinKeyDashboard" Grid.Row="4" Height="154" Margin="0,26,0,0" Panel.ZIndex="10"
-                        Background="#ED0B0B0B" CornerRadius="18" Padding="14" ClipToBounds="True">
-                    <Border.Effect>
-                        <DropShadowEffect BlurRadius="34" ShadowDepth="6" Opacity="0.5" Color="#000000" />
-                    </Border.Effect>
-                    <Grid>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="*" />
-                        </Grid.RowDefinitions>
-                        <!-- Top accent hairline -->
-                        <Border Grid.Row="0" Height="2" CornerRadius="1" Margin="16,0,16,14" VerticalAlignment="Top">
-                            <Border.Background>
-                                <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
-                                    <GradientStop Color="#00FF003C" Offset="0" />
-                                    <GradientStop Color="#66FF003C" Offset="0.5" />
-                                    <GradientStop Color="#00FF003C" Offset="1" />
-                                </LinearGradientBrush>
-                            </Border.Background>
-                        </Border>
-                        <Grid Grid.Row="1">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="14" />
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="14" />
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="14" />
-                                <ColumnDefinition Width="*" />
-                            </Grid.ColumnDefinitions>
-                            <!-- Media -->
-                            <Border Grid.Column="0" CornerRadius="13" Padding="12">
-                                <Border.Background>
-                                    <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
-                                        <GradientStop Color="#1CFFFFFF" Offset="0" />
-                                        <GradientStop Color="#09FFFFFF" Offset="1" />
-                                    </LinearGradientBrush>
-                                </Border.Background>
-                                <Grid>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="*" />
-                                    </Grid.ColumnDefinitions>
-                                    <Border Width="1.5" Height="30" CornerRadius="1" Background="#FF003C"
-                                            HorizontalAlignment="Left" VerticalAlignment="Center" />
-                                    <Border x:Name="DashMediaArtBorder" Width="54" Height="54" CornerRadius="12"
-                                            Background="#10FFFFFF" BorderBrush="#26FFFFFF" BorderThickness="1"
-                                            ClipToBounds="True" VerticalAlignment="Center" Margin="9,0,0,0">
-                                        <Border.Effect>
-                                            <DropShadowEffect BlurRadius="16" ShadowDepth="0" Opacity="0.6" Color="#FF003C" />
-                                        </Border.Effect>
-                                        <Border x:Name="DashMediaArt" CornerRadius="11" />
-                                    </Border>
-                                    <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="14,0,0,0">
-                                        <TextBlock x:Name="DashMediaTitle" Text="No media" FontSize="13" FontWeight="SemiBold"
-                                                   Foreground="#FFFFFF" TextTrimming="CharacterEllipsis" />
-                                        <TextBlock x:Name="DashMediaArtist" Text="" FontSize="9.5" Foreground="#909090"
-                                                   TextTrimming="CharacterEllipsis" Margin="0,3,0,0" />
-                                        <Button x:Name="DashMediaPlayButton" Style="{StaticResource LibraryFilterButton}"
-                                                Content="PLAY" FontSize="9" FontWeight="SemiBold" Height="26" Padding="14,4"
-                                                Margin="0,9,0,0" HorizontalAlignment="Left" Click="DashMediaPlay_Click" />
-                                    </StackPanel>
-                                </Grid>
-                            </Border>
-                            <!-- Continue playing -->
-                            <Border Grid.Column="2" CornerRadius="13" Padding="12"
-                                    MouseLeftButtonUp="DashContinue_Click" Cursor="Hand">
-                                <Border.Background>
-                                    <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
-                                        <GradientStop Color="#1CFFFFFF" Offset="0" />
-                                        <GradientStop Color="#09FFFFFF" Offset="1" />
-                                    </LinearGradientBrush>
-                                </Border.Background>
-                                <Grid>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="*" />
-                                    </Grid.ColumnDefinitions>
-                                    <Border Width="1.5" Height="30" CornerRadius="1" Background="#3C9DFF"
-                                            HorizontalAlignment="Left" VerticalAlignment="Center" />
-                                    <Border x:Name="DashContinueArt" Width="54" Height="54" CornerRadius="12"
-                                            Background="#10FFFFFF" BorderBrush="#26FFFFFF" BorderThickness="1"
-                                            ClipToBounds="True" VerticalAlignment="Center" Margin="9,0,0,0">
-                                        <Border x:Name="DashContinueArtInner" CornerRadius="11" />
-                                    </Border>
-                                    <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="14,0,0,0">
-                                        <TextBlock Text="CONTINUE PLAYING" FontSize="9" FontWeight="SemiBold" Foreground="#7FA8E0" />
-                                        <TextBlock x:Name="DashContinueName" Text="Nothing to resume" FontSize="13" FontWeight="SemiBold"
-                                                   Foreground="#FFFFFF" TextTrimming="CharacterEllipsis" Margin="0,4,0,0" />
-                                        <TextBlock Text="Resume game  >" FontSize="9" Foreground="#3C9DFF" Margin="0,4,0,0" />
-                                    </StackPanel>
-                                </Grid>
-                            </Border>
-                            <!-- Notifications -->
-                            <Border Grid.Column="4" CornerRadius="13" Padding="12"
-                                    MouseLeftButtonUp="DashNotification_Click" Cursor="Hand">
-                                <Border.Background>
-                                    <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
-                                        <GradientStop Color="#1CFFFFFF" Offset="0" />
-                                        <GradientStop Color="#09FFFFFF" Offset="1" />
-                                    </LinearGradientBrush>
-                                </Border.Background>
-                                <Grid>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="*" />
-                                    </Grid.ColumnDefinitions>
-                                    <Border Width="1.5" Height="30" CornerRadius="1" Background="#E8B83C"
-                                            HorizontalAlignment="Left" VerticalAlignment="Center" />
-                                    <Border Width="40" Height="40" CornerRadius="11" Background="#14FFFFFF"
-                                            VerticalAlignment="Center" Margin="9,0,0,0">
-                                        <TextBlock Text="&#xE7F4;" FontFamily="Segoe Fluent Icons" FontSize="18"
-                                                   Foreground="#E8B83C" HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False" />
-                                    </Border>
-                                    <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="14,0,0,0">
-                                        <TextBlock Text="NOTIFICATIONS" FontSize="9" FontWeight="SemiBold" Foreground="#D9B96A" />
-                                        <TextBlock x:Name="DashNotificationTitle" Text="No notifications" FontSize="13" FontWeight="SemiBold"
-                                                   Foreground="#FFFFFF" TextTrimming="CharacterEllipsis" Margin="0,4,0,0" />
-                                        <TextBlock x:Name="DashNotificationMessage" Text="" FontSize="9.5" Foreground="#909090"
-                                                   TextTrimming="CharacterEllipsis" Margin="0,2,0,0" />
-                                    </StackPanel>
-                                </Grid>
-                            </Border>
-                            <!-- Performance mode -->
-                            <Border Grid.Column="6" CornerRadius="13" Padding="12">
-                                <Border.Background>
-                                    <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
-                                        <GradientStop Color="#1CFFFFFF" Offset="0" />
-                                        <GradientStop Color="#09FFFFFF" Offset="1" />
-                                    </LinearGradientBrush>
-                                </Border.Background>
-                                <Grid>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="*" />
-                                    </Grid.ColumnDefinitions>
-                                    <Border Width="1.5" Height="30" CornerRadius="1" Background="#24C486"
-                                            HorizontalAlignment="Left" VerticalAlignment="Center" />
-                                    <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="13,0,0,0">
-                                        <TextBlock Text="PERFORMANCE MODE" FontSize="9" FontWeight="SemiBold" Foreground="#7FD9B4" />
-                                        <TextBlock x:Name="DashPerfModeText" Text="BALANCED" FontSize="14" FontWeight="SemiBold"
-                                                   Foreground="#24C486" Margin="0,3,0,0" />
-                                        <UniformGrid Columns="3" Rows="1" Margin="0,8,0,0">
-                                            <Button Style="{StaticResource LibraryFilterButton}" Content="ULT" Tag="Ultimate" FontSize="9" FontWeight="SemiBold"
-                                                    Height="25" Margin="0,0,5,0" Click="PerformanceMode_Click" />
-                                            <Button Style="{StaticResource LibraryFilterButton}" Content="BAL" Tag="Balanced" FontSize="9" FontWeight="SemiBold"
-                                                    Height="25" Margin="0,0,5,0" Click="PerformanceMode_Click" />
-                                            <Button Style="{StaticResource LibraryFilterButton}" Content="ECO" Tag="Eco" FontSize="9" FontWeight="SemiBold"
-                                                    Height="25" Click="PerformanceMode_Click" />
-                                        </UniformGrid>
-                                    </StackPanel>
-                                </Grid>
-                            </Border>
-                        </Grid>
-                    </Grid>
-                </Border>
-            </Grid>
-
-            <!-- Controller prompts -->
-            <StackPanel x:Name="TaskControllerPrompts" Orientation="Vertical" VerticalAlignment="Bottom"
-                        HorizontalAlignment="Right" Margin="0,0,170,60" Visibility="Collapsed">
-                <Border x:Name="TaskAcceptPill" Width="30" Height="30" CornerRadius="15" Background="#20FFFFFF" Margin="0,0,0,6">
-                    <TextBlock x:Name="TaskAcceptButtonGlyph" Text="A" FontSize="14" FontWeight="SemiBold"
-                               HorizontalAlignment="Center" VerticalAlignment="Center" />
-                </Border>
-                <TextBlock Text="SELECT" Foreground="#A0A0A0" FontSize="11" HorizontalAlignment="Center" Margin="0,0,0,14" />
-                <Border x:Name="TaskBackPill" Width="30" Height="30" CornerRadius="15" Background="#20FFFFFF" Margin="0,0,0,6">
-                    <TextBlock x:Name="TaskBackButtonGlyph" Text="B" FontSize="14" FontWeight="SemiBold"
-                               HorizontalAlignment="Center" VerticalAlignment="Center" />
-                </Border>
-                <TextBlock Text="CLOSE" Foreground="#A0A0A0" FontSize="11" HorizontalAlignment="Center" />
-            </StackPanel>
-        </Grid>
 
         <Grid x:Name="AltTabOverlay" Grid.RowSpan="3" Margin="-52,-34" Background="#E6040404"
               Visibility="Collapsed" IsHitTestVisible="False">
@@ -1745,32 +1458,55 @@
         <!-- Notification Center Overlay -->
         <Grid x:Name="NotificationCenterOverlay" Grid.RowSpan="3" Margin="-52,-34" Background="#E9000000" Visibility="Collapsed" MouseDown="DismissibleOverlay_MouseDown">
 <Border Width="420" MaxHeight="520" Background="#0D0D0D" CornerRadius="14" Padding="24" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,50,80,0" MouseDown="OverlayContent_MouseDown">
-<StackPanel><Grid Margin="0,0,0,16"><TextBlock Text="NOTIFICATIONS" FontSize="14" FontWeight="SemiBold" Foreground="#A0A0A0" VerticalAlignment="Center"/><Button Style="{StaticResource BackActionButton}" Content="B" Width="32" Height="32" HorizontalAlignment="Left" Click="CloseNotificationCenter"/><Button Content="CLEAR ALL" FontSize="10" Foreground="#707070" Background="Transparent" HorizontalAlignment="Right" Click="ClearNotifications_Click" Cursor="Hand"/></Grid>
+<StackPanel><Grid Margin="0,0,0,16"><TextBlock Text="NOTIFICATIONS" FontSize="14" FontWeight="SemiBold" Foreground="#A0A0A0" VerticalAlignment="Center"/><Button Content="CLEAR ALL" FontSize="10" Foreground="#707070" Background="Transparent" HorizontalAlignment="Right" Click="ClearNotifications_Click" Cursor="Hand"/></Grid>
 <Grid>
     <ScrollViewer x:Name="NotificationsScroll" MaxHeight="420" VerticalScrollBarVisibility="Auto" ScrollChanged="ListScroll_Changed"><StackPanel x:Name="NotificationsList"/></ScrollViewer>
     <TextBlock x:Name="NotificationsScrollArrow" Text="&#x25BC;" FontSize="10" Foreground="#40FFFFFF" HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,2" Visibility="Collapsed" />
     </Grid>
 <TextBlock x:Name="NotificationsEmpty" Text="No notifications yet" FontSize="13" Foreground="#505050" HorizontalAlignment="Center" Margin="0,30,0,0"/></StackPanel></Border></Grid>
 
-<!-- Update Available Overlay -->
-<Grid x:Name="UpdateOverlay" Grid.RowSpan="3" Margin="-52,-34" Background="#E9000000" Visibility="Collapsed" MouseDown="DismissibleOverlay_MouseDown">
-  <Border Width="540" MaxHeight="420" Background="#0D0D0D" CornerRadius="14" Padding="24" HorizontalAlignment="Center" VerticalAlignment="Center" MouseDown="OverlayContent_MouseDown">
-    <StackPanel>
-      <TextBlock Text="UPDATE AVAILABLE" FontSize="16" FontWeight="SemiBold" Foreground="#E0E0E0" HorizontalAlignment="Center" />
-      <TextBlock x:Name="UpdateVersionText" FontSize="12" Foreground="#909090" HorizontalAlignment="Center" Margin="0,6,0,0" TextWrapping="Wrap" MaxWidth="460" />
-      <TextBlock Text="WHAT'S NEW" FontSize="10" Foreground="#606060" Margin="0,16,0,6" />
-      <Border Background="#10FFFFFF" CornerRadius="8">
-        <ScrollViewer MaxHeight="150" VerticalScrollBarVisibility="Auto">
-          <TextBlock x:Name="UpdateNotesText" FontSize="11" Foreground="#B0B0B0" TextWrapping="Wrap" Padding="10" />
-        </ScrollViewer>
-      </Border>
-      <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,20,0,0">
-        <Button x:Name="UpdateNowButton" Style="{StaticResource LibraryFilterButton}" Content="UPDATE NOW" Width="170" Height="40" Margin="0,0,12,0" Click="UpdateNow_Click" />
-        <Button x:Name="UpdateLaterButton" Style="{StaticResource LibraryFilterButton}" Content="NOT NOW" Width="170" Height="40" Click="UpdateLater_Click" />
-      </StackPanel>
+<!-- Update Available Banner (macOS-style, top-right, persistent) -->
+<Border x:Name="UpdateBanner" Grid.Row="1" Grid.RowSpan="2" HorizontalAlignment="Right" VerticalAlignment="Top"
+        Margin="0,8,48,0" Width="400" Padding="16" Panel.ZIndex="40"
+        Visibility="Collapsed">
+  <Border.Effect>
+    <DropShadowEffect ShadowDepth="10" BlurRadius="22" Opacity="0.55" Color="#000000" />
+  </Border.Effect>
+  <Border.Style>
+    <Style TargetType="Border">
+      <Setter Property="Background" Value="#F2161616" />
+      <Setter Property="BorderBrush" Value="#26FFFFFF" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="16" />
+    </Style>
+  </Border.Style>
+  <Grid>
+    <Grid.ColumnDefinitions>
+      <ColumnDefinition Width="Auto" />
+      <ColumnDefinition Width="*" />
+      <ColumnDefinition Width="Auto" />
+    </Grid.ColumnDefinitions>
+    <Border Grid.Column="0" Width="46" Height="46" CornerRadius="13" Background="#1FFF003C"
+            VerticalAlignment="Top" HorizontalAlignment="Left">
+      <TextBlock Text="&#xE895;" FontFamily="Segoe Fluent Icons" FontSize="20" Foreground="#FF003C"
+                 HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False" />
+    </Border>
+    <StackPanel Grid.Column="1" Margin="14,0,0,0" VerticalAlignment="Center">
+      <TextBlock Text="UPDATE AVAILABLE" FontSize="10" FontWeight="SemiBold" Foreground="#A8A8A8" />
+      <TextBlock x:Name="UpdateBannerVersionText" FontSize="15" FontWeight="SemiBold" Foreground="#FFFFFF"
+                 TextTrimming="CharacterEllipsis" Margin="0,4,0,0" />
+      <TextBlock Text="A newer version is ready to install." FontSize="10" Foreground="#909090"
+                 TextWrapping="Wrap" Margin="0,3,0,0" />
     </StackPanel>
-  </Border>
-</Grid>
+    <StackPanel Grid.Column="2" VerticalAlignment="Top" Orientation="Horizontal">
+      <Button x:Name="UpdateBannerNowButton" Style="{StaticResource LibraryFilterButton}" Content="UPDATE NOW"
+              Width="116" Height="34" Margin="0,0,8,0" Click="UpdateNow_Click" />
+      <Button x:Name="UpdateBannerDismissButton" Content="&#xE8BB;" FontFamily="Segoe Fluent Icons" FontSize="11"
+              Width="26" Height="26" Padding="0" Background="Transparent" BorderThickness="0" Foreground="#707070"
+              Cursor="Hand" Click="UpdateLater_Click" ToolTip="Dismiss for this session" />
+    </StackPanel>
+  </Grid>
+</Border>
 
 <!-- Downloading Update Overlay -->
 <Grid x:Name="UpdateProgressOverlay" Grid.RowSpan="3" Margin="-52,-34" Background="#F2050505" Visibility="Collapsed" IsHitTestVisible="True">

@@ -18,31 +18,13 @@ public sealed class GameEntry
     public string Source { get; set; } = "Manual";
     public long TotalPlayTimeSeconds { get; set; }
     public DateTime? LastPlayedUtc { get; set; }
-    public bool IsApplication { get; set; }
-    public string? ApplicationIconPath { get; set; }
-    public string ApplicationCategory { get; set; } = "Utilities";
     public bool IsRunning { get; set; }
-    public bool IsInApplicationMenu { get; set; }
-    public string ApplicationMenuActionLabel => IsInApplicationMenu ? "REMOVE FROM MENU" : "ADD TO MENU";
     public bool IsFavorite { get; set; }
     public bool IsHidden { get; set; }
     public string PerformanceProfile { get; set; } = "Balanced";
     public bool HasMetadataOverride { get; set; }
     public string FavoriteActionLabel => IsFavorite ? "REMOVE FROM FAVORITES" : "ADD TO FAVORITES";
     public string HiddenActionLabel => IsHidden ? "UNHIDE GAME" : "HIDE GAME";
-    public string ApplicationGlyph
-    {
-        get
-        {
-            var name = Name.ToLowerInvariant();
-            if (name.Contains("spotify")) return "♫";
-            if (name.Contains("discord")) return "◉";
-            if (name.Contains("chrome") || name.Contains("edge") || name.Contains("firefox") || name.Contains("opera") || name.Contains("brave")) return "◎";
-            if (name.Contains("vlc")) return "▶";
-            if (name.Contains("twitch") || name.Contains("youtube") || name.Contains("netflix")) return "▻";
-            return "◆";
-        }
-    }
 
     public string StoreName
     {

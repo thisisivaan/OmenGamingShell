@@ -34,6 +34,15 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _taskViewHotCornerTimer = new() { Interval = TimeSpan.FromMilliseconds(250) };
     private const string UpdateNotificationTag = "update";
     private const string UpdateNotificationIcon = "\uE895";
+    private const string IconBatteryLow = "\uE9EE";
+    private const string IconBatteryCritical = "\uE9ED";
+    private const string BatteryNotificationTag = "battery";
+    private const int BatteryWarnPercent = 20;
+    private const int BatteryCriticalPercent = 10;
+    private const int BatteryShutdownPercent = 5;
+    private bool _battery20Notified;
+    private bool _battery10Notified;
+    private BatteryCriticalOverlay? _batteryOverlay;
     private readonly DispatcherTimer _updateCheckTimer = new() { Interval = TimeSpan.FromHours(1) };
     private bool _updateCheckInProgress;
     private bool _updateDismissedThisSession;
@@ -57,12 +66,11 @@ public partial class MainWindow : Window
     private string _activeLibraryFilter = "All";
     private HwndSource? _windowSource;
     private string? _lastHomeSelection;
-    private readonly List<IntPtr> _taskThumbnails = new();
+    private WinKeyOverlayWindow? _winKeyOverlay;
     private readonly List<IntPtr> _homeTaskThumbnails = new();
     private WifiNetwork? _pendingWifiNetwork;
     private IReadOnlyList<BluetoothDevice> _cachedBluetoothDevices = Array.Empty<BluetoothDevice>();
     private bool _wifiScanInProgress;
-    private IReadOnlyList<TaskWindowEntry> _winKeyWindows = Array.Empty<TaskWindowEntry>();
     private IReadOnlyList<TaskWindowEntry> _altTabWindows = Array.Empty<TaskWindowEntry>();
     private int _altTabIndex;
     private IntPtr _altTabThumbnail;
@@ -129,7 +137,7 @@ public partial class MainWindow : Window
         _taskViewHotCornerTimer.Tick += (_, _) =>
         {
             _taskViewHotCornerTimer.Stop();
-            if (TaskSwitcherOverlay.Visibility != Visibility.Visible) ShowTaskSwitcher();
+            if (!IsWinKeyOverlayOpen) OpenWinKeyOverlay();
         };
         _bgSlideshowTimer.Tick += (_, _) => AdvanceSlideshow();
         _networkCheckTimer.Tick += (_, _) => UpdateNetworkStatus();
@@ -526,23 +534,25 @@ try
         BrandTranslation.Y = (ActualHeight - OmenBrand.ActualHeight) / 2d - origin.Y;
         BootBrandScale.ScaleX = 1.8;
         BootBrandScale.ScaleY = 1.8;
+        GameLibraryHeaderHost.Opacity = 0;
+        ShellTopStatus.Opacity = 0;
+        LibraryArea.Opacity = 0;
+        ShellControls.Opacity = 0;
 
-        await AnimateAsync(OmenBrand, UIElement.OpacityProperty, 0, 1, 450);
-        await Task.Delay(700);
+        await AnimateAsync(OmenBrand, UIElement.OpacityProperty, 0, 1, 400);
 
         var easing = new CubicEase { EasingMode = EasingMode.EaseOut };
         var moveX = AnimateAsync(BrandTranslation, TranslateTransform.XProperty,
-            BrandTranslation.X, 0, 1200, easing);
+            BrandTranslation.X, 0, 900, easing);
         var moveY = AnimateAsync(BrandTranslation, TranslateTransform.YProperty,
-            BrandTranslation.Y, 0, 1200, easing);
-        var scaleX = AnimateAsync(BootBrandScale, ScaleTransform.ScaleXProperty, 1.8, 1, 1200, easing);
-        var scaleY = AnimateAsync(BootBrandScale, ScaleTransform.ScaleYProperty, 1.8, 1, 1200, easing);
-        await Task.Delay(600);
+            BrandTranslation.Y, 0, 900, easing);
+        var scaleX = AnimateAsync(BootBrandScale, ScaleTransform.ScaleXProperty, 1.8, 1, 900, easing);
+        var scaleY = AnimateAsync(BootBrandScale, ScaleTransform.ScaleYProperty, 1.8, 1, 900, easing);
         var reveal = Task.WhenAll(
-            AnimateAsync(GameLibraryHeaderHost, UIElement.OpacityProperty, 0, 1, 700),
-            AnimateAsync(ShellTopStatus, UIElement.OpacityProperty, 0, 1, 700),
-            AnimateAsync(LibraryArea, UIElement.OpacityProperty, 0, 1, 700),
-            AnimateAsync(ShellControls, UIElement.OpacityProperty, 0, 1, 700));
+            AnimateAsync(GameLibraryHeaderHost, UIElement.OpacityProperty, 0, 1, 600),
+            AnimateAsync(ShellTopStatus, UIElement.OpacityProperty, 0, 1, 600),
+            AnimateAsync(LibraryArea, UIElement.OpacityProperty, 0, 1, 600),
+            AnimateAsync(ShellControls, UIElement.OpacityProperty, 0, 1, 600));
         await Task.WhenAll(moveX, moveY, scaleX, scaleY, reveal);
         LibraryArea.IsHitTestVisible = true;
     }
@@ -656,7 +666,7 @@ try
         ShowCursorForMouseActivity();
         var windowPoint = e.GetPosition(this);
         var inTaskViewCorner = windowPoint.X >= Math.Max(0, ActualWidth - 10) && windowPoint.Y <= 10;
-        if (inTaskViewCorner && TaskSwitcherOverlay.Visibility != Visibility.Visible)
+        if (inTaskViewCorner && !IsWinKeyOverlayOpen)
         {
             if (!_taskViewHotCornerTimer.IsEnabled) _taskViewHotCornerTimer.Start();
         }
@@ -797,19 +807,69 @@ try
 
     private void UpdateBattery()
     {
-        if (!GetSystemPowerStatus(out var status) || status.BatteryLifePercent == byte.MaxValue)
+        var percent = PowerStatus.BatteryPercent();
+        if (PowerStatus.IsCharging())
         {
-            BatteryFill.Width = 0;
-            ChargingIcon.Visibility = Visibility.Collapsed;
+            _battery20Notified = false;
+            _battery10Notified = false;
+            NotificationCenter.RemoveTag(BatteryNotificationTag);
+            HideBatteryCriticalOverlay();
+            BatteryFill.Width = percent is null ? 0 : 16d * percent.Value / 100d;
+            BatteryFill.Background = BatteryGreen;
+            ChargingIcon.Visibility = Visibility.Visible;
             return;
         }
 
-        var percentage = Math.Clamp((int)status.BatteryLifePercent, 0, 100);
+        ChargingIcon.Visibility = Visibility.Collapsed;
+        if (percent is null)
+        {
+            BatteryFill.Width = 0;
+            return;
+        }
+
+        var percentage = percent.Value;
         BatteryFill.Width = 16d * percentage / 100d;
         BatteryFill.Background = percentage > 50
             ? BatteryGreen
             : percentage > 20 ? BatteryYellow : BatteryRed;
-        ChargingIcon.Visibility = status.AcLineStatus == 1 ? Visibility.Visible : Visibility.Collapsed;
+
+        if (percentage <= BatteryShutdownPercent)
+        {
+            ShowBatteryCriticalOverlay(percentage);
+        }
+        else
+        {
+            HideBatteryCriticalOverlay();
+        }
+
+        if (percentage <= BatteryWarnPercent && !_battery20Notified)
+        {
+            _battery20Notified = true;
+            NotificationCenter.RemoveTag(BatteryNotificationTag);
+            Notify($"Battery lower than {BatteryWarnPercent}%", "Battery low", "Connect a power source soon.", IconBatteryLow, BatteryNotificationTag);
+        }
+
+        if (percentage <= BatteryCriticalPercent && !_battery10Notified)
+        {
+            _battery10Notified = true;
+            NotificationCenter.RemoveTag(BatteryNotificationTag);
+            Notify($"Battery lower than {BatteryCriticalPercent}%", "Battery low", "Battery is almost drained. Plug in your charger now.", IconBatteryCritical, BatteryNotificationTag);
+        }
+    }
+
+    private void ShowBatteryCriticalOverlay(int percent)
+    {
+        if (_batteryOverlay is null)
+        {
+            _batteryOverlay = new BatteryCriticalOverlay();
+            _batteryOverlay.Closed += (_, _) => _batteryOverlay = null;
+        }
+        _batteryOverlay.ShowOverlay(percent, BatteryShutdownPercent);
+    }
+
+    private void HideBatteryCriticalOverlay()
+    {
+        _batteryOverlay?.Dismiss();
     }
 
     private static Brush CreateFrozenBrush(string color)
@@ -819,30 +879,9 @@ try
         return brush;
     }
 
-    [DllImport("kernel32.dll")]
-    private static extern bool GetSystemPowerStatus(out SystemPowerStatus status);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct SystemPowerStatus
-    {
-        public byte AcLineStatus;
-        public byte BatteryFlag;
-        public byte BatteryLifePercent;
-        public byte SystemStatusFlag;
-        public int BatteryLifeTime;
-        public int BatteryFullLifeTime;
-    }
-
     private void Game_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not Button { Tag: GameEntry game }) return;
-
-        if (game.IsApplication)
-        {
-            LaunchApplication(game);
-            return;
-        }
-
         OpenGameDetails(game);
     }
 
@@ -856,162 +895,15 @@ try
         LaunchDetailsButton.Focus();
     }
 
-    private void DashNotification_Click(object sender, MouseButtonEventArgs e)
-    {
-        if (TaskSwitcherOverlay.Visibility == Visibility.Visible)
-        {
-            CloseTaskSwitcher();
-            Show();
-            WindowState = WindowState.Maximized;
-            Activate();
-            Topmost = true;
-            Dispatcher.BeginInvoke(() => Topmost = false, DispatcherPriority.ApplicationIdle);
-        }
-        PopulateNotifications();
-        NotificationCenterOverlay.Visibility = Visibility.Visible;
-    }
-
     private void ContinueGame_Click(object sender, RoutedEventArgs e)
     {
         _lastHomeSelection = "Continue";
-        if (ContinueHost.DataContext is GameEntry { IsApplication: false } game) OpenGameDetails(game);
-    }
-
-    private void QuickLaunch_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is not Button { Tag: GameEntry application }) return;
-        _lastHomeSelection = application.Name;
-        LaunchApplication(application);
-    }
-
-    private void LaunchApplication(GameEntry application)
-    {
-        try
-        {
-            var (launchTarget, shortcutArguments) = ResolveShortcutLaunch(application.Target);
-            if (launchTarget.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
-            {
-                var processName = Path.GetFileNameWithoutExtension(launchTarget);
-                var running = Process.GetProcessesByName(processName)
-                    .FirstOrDefault(process => process.MainWindowHandle != IntPtr.Zero);
-                if (running is not null)
-                {
-                    ShowWindow(running.MainWindowHandle, 9);
-                    SetForegroundWindow(running.MainWindowHandle);
-                    StatusText.Text = $"SWITCHED TO {application.Name.ToUpperInvariant()}";
-                    return;
-                }
-            }
-            var arguments = string.Join(" ", new[] { shortcutArguments, application.Arguments }
-                .Where(value => !string.IsNullOrWhiteSpace(value)));
-            var executableTarget = File.Exists(launchTarget) ? launchTarget : application.Target;
-            var startInfo = new ProcessStartInfo(executableTarget)
-            {
-                UseShellExecute = true,
-                Arguments = string.IsNullOrWhiteSpace(arguments) ? string.Empty : arguments,
-                WorkingDirectory = launchTarget.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
-                    ? Path.GetDirectoryName(launchTarget) ?? string.Empty : string.Empty
-            };
-            Process.Start(startInfo);
-            StatusText.Text = $"OPENED {application.Name.ToUpperInvariant()}";
-        }
-        catch (Exception exception)
-        {
-            StatusText.Text = $"FAILED TO OPEN {application.Name.ToUpperInvariant()}";
-            ShowNotification($"Could not open {application.Name}: {exception.Message}");
-        }
+        if (ContinueHost.DataContext is GameEntry game) OpenGameDetails(game);
     }
 
     private IntPtr WindowMessageHook(IntPtr window, int message, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
         return IntPtr.Zero;
-    }
-
-    private static readonly object ShortcutResolveSync = new();
-    private static readonly Dictionary<string, (string Target, string? Arguments)> ShortcutResolveCache = new(StringComparer.OrdinalIgnoreCase);
-
-    private static (string Target, string? Arguments) ResolveShortcutLaunch(string path)
-    {
-        if (!path.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase)) return (path, null);
-        lock (ShortcutResolveSync)
-        {
-            if (ShortcutResolveCache.TryGetValue(path, out var cached)) return cached;
-        }
-        var result = ResolveShortcutTargetCom(path);
-        if (!File.Exists(result.Target))
-        {
-            var powerShell = ResolveShortcutTargetPowerShell(path);
-            if (File.Exists(powerShell.Target)) result = powerShell;
-        }
-        if (!File.Exists(result.Target))
-        {
-            var swapped = SwapProgramFilesRoot(result.Target);
-            if (!string.IsNullOrWhiteSpace(swapped) && File.Exists(swapped)) result = (swapped, result.Arguments);
-        }
-        lock (ShortcutResolveSync) ShortcutResolveCache[path] = result;
-        return result;
-    }
-
-    private static string SwapProgramFilesRoot(string path)
-    {
-        if (string.IsNullOrWhiteSpace(path)) return string.Empty;
-        if (path.Contains("\\Program Files (x86)\\", StringComparison.OrdinalIgnoreCase))
-            return path.Replace("\\Program Files (x86)\\", "\\Program Files\\", StringComparison.OrdinalIgnoreCase);
-        if (path.Contains("\\Program Files\\", StringComparison.OrdinalIgnoreCase))
-            return path.Replace("\\Program Files\\", "\\Program Files (x86)\\", StringComparison.OrdinalIgnoreCase);
-        return string.Empty;
-    }
-
-    private static (string Target, string? Arguments) ResolveShortcutTargetPowerShell(string path)
-    {
-        try
-        {
-            var escaped = path.Replace("'", "''");
-            using var process = Process.Start(new ProcessStartInfo("powershell.exe")
-            {
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true,
-                Arguments = $"-NoProfile -NonInteractive -Command \"$s = (New-Object -ComObject WScript.Shell).CreateShortcut('{escaped}'); [pscustomobject]@{{ T = $s.TargetPath; A = $s.Arguments }} | ConvertTo-Json -Compress\""
-            });
-            if (process is null) return (path, null);
-            var json = process.StandardOutput.ReadToEnd();
-            process.WaitForExit(5000);
-            using var document = JsonDocument.Parse(json);
-            var root = document.RootElement;
-            var target = root.TryGetProperty("T", out var targetValue) ? targetValue.GetString() : null;
-            var arguments = root.TryGetProperty("A", out var argsValue) ? argsValue.GetString() : null;
-            target = Environment.ExpandEnvironmentVariables((target ?? string.Empty).Trim().Trim('"'));
-            return string.IsNullOrWhiteSpace(target) ? (path, null) : (target, arguments);
-        }
-        catch { return (path, null); }
-    }
-
-    private static (string Target, string? Arguments) ResolveShortcutTargetCom(string path)
-    {
-        object? shell = null;
-        object? shortcut = null;
-        try
-        {
-            var shellType = Type.GetTypeFromProgID("WScript.Shell");
-            if (shellType is null) return (path, null);
-            shell = Activator.CreateInstance(shellType);
-            shortcut = shellType.InvokeMember("CreateShortcut", BindingFlags.InvokeMethod, null, shell,
-                new object[] { path });
-            if (shortcut is null) return (path, null);
-            var shortcutType = shortcut.GetType();
-            var target = shortcutType.InvokeMember("TargetPath", BindingFlags.GetProperty, null, shortcut, null) as string;
-            var arguments = shortcutType.InvokeMember("Arguments", BindingFlags.GetProperty, null, shortcut, null) as string;
-            target = Environment.ExpandEnvironmentVariables((target ?? string.Empty).Trim().Trim('"'));
-            return (target, arguments);
-        }
-        catch { return (path, null); }
-        finally
-        {
-            if (shortcut is not null && Marshal.IsComObject(shortcut)) Marshal.FinalReleaseComObject(shortcut);
-            if (shell is not null && Marshal.IsComObject(shell)) Marshal.FinalReleaseComObject(shell);
-        }
     }
 
     private void PopulateLibraryFilters()
@@ -1086,10 +978,10 @@ try
     private const string IconAdd = "\uE8B7";
     private const string IconAudio = "\uE7F5";
 
-    private void Notify(string toast, string title, string message, string icon = "\uE7BA")
+    private void Notify(string toast, string title, string message, string icon = "\uE7BA", string? tag = null)
     {
         ShowNotification(toast);
-        NotificationCenter.Push(title, message, icon);
+        NotificationCenter.Push(title, message, icon, tag);
     }
 
     private string CurrentAppVersion => Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "0.0.0";
@@ -1122,6 +1014,7 @@ try
             if (NotificationCenter.HasTag(UpdateNotificationTag))
                 NotificationCenter.RemoveTag(UpdateNotificationTag);
             NotificationCenter.Push("Update available", $"v{release.Version} is ready to install", UpdateNotificationIcon, UpdateNotificationTag);
+            ShowUpdatePrompt(release);
         }
         catch (Exception exception)
         {
@@ -1136,20 +1029,67 @@ try
 
     private void ShowUpdatePrompt(UpdateReleaseInfo release)
     {
-        UpdateVersionText.Text = $"OMEN Gaming Shell v{release.Version} is available (you are on v{CurrentAppVersion})";
-        UpdateNotesText.Text = string.IsNullOrWhiteSpace(release.Notes) ? "Contains fixes and improvements." : release.Notes;
-        UpdateOverlay.Visibility = Visibility.Visible;
+        _pendingRelease = release;
+        UpdateBannerVersionText.Text = $"OMEN Gaming Shell v{release.Version} is available";
+        ShowUpdateBanner();
+    }
+
+    private void ShowUpdateBanner()
+    {
+        if (UpdateBanner.Visibility == Visibility.Visible) return;
+        UpdateBanner.Visibility = Visibility.Visible;
+        var transform = UpdateBanner.RenderTransform as TranslateTransform ?? new TranslateTransform();
+        UpdateBanner.RenderTransform = transform;
+        transform.X = 420;
+        UpdateBanner.Opacity = 0;
+        var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
+        var animX = new DoubleAnimation(420, 0, TimeSpan.FromMilliseconds(450)) { EasingFunction = ease };
+        var animOpacity = new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(450)) { EasingFunction = ease };
+        animOpacity.Completed += (_, _) => UpdateBanner.BeginAnimation(UIElement.OpacityProperty, null);
+        UpdateBanner.BeginAnimation(UIElement.OpacityProperty, animOpacity);
+        transform.BeginAnimation(TranslateTransform.XProperty, animX);
+    }
+
+    private void HideUpdateBanner()
+    {
+        if (UpdateBanner.Visibility != Visibility.Visible) return;
+        var transform = UpdateBanner.RenderTransform as TranslateTransform ?? new TranslateTransform();
+        UpdateBanner.RenderTransform = transform;
+        var ease = new CubicEase { EasingMode = EasingMode.EaseIn };
+        var animX = new DoubleAnimation(0, 420, TimeSpan.FromMilliseconds(280))
+        {
+            EasingFunction = ease, FillBehavior = FillBehavior.HoldEnd
+        };
+        var animOpacity = new DoubleAnimation(1, 0, TimeSpan.FromMilliseconds(280))
+        {
+            EasingFunction = ease, FillBehavior = FillBehavior.HoldEnd
+        };
+        animX.Completed += (_, _) =>
+        {
+            UpdateBanner.BeginAnimation(TranslateTransform.XProperty, null);
+            transform.X = 0;
+            UpdateBanner.Visibility = Visibility.Collapsed;
+        };
+        animOpacity.Completed += (_, _) =>
+        {
+            UpdateBanner.BeginAnimation(UIElement.OpacityProperty, null);
+            UpdateBanner.Opacity = 1;
+        };
+        UpdateBanner.BeginAnimation(UIElement.OpacityProperty, animOpacity);
+        transform.BeginAnimation(TranslateTransform.XProperty, animX);
     }
 
     private void UpdateLater_Click(object sender, RoutedEventArgs e)
     {
-        UpdateOverlay.Visibility = Visibility.Collapsed;
+        HideUpdateBanner();
         _updateDismissedThisSession = true;
+        NotificationCenter.RemoveTag(UpdateNotificationTag);
+        PopulateNotifications();
     }
 
     private async void UpdateNow_Click(object sender, RoutedEventArgs e)
     {
-        UpdateOverlay.Visibility = Visibility.Collapsed;
+        HideUpdateBanner();
         var release = _pendingRelease;
         if (release is null) return;
         UpdateProgressText.Text = $"v{release.Version} is downloading...";
@@ -1181,7 +1121,7 @@ try
     private void UpdateContinuePlaying()
     {
         var game = _allGames
-            .Where(entry => !entry.IsApplication && !entry.IsHidden && entry.LastPlayedUtc.HasValue)
+            .Where(entry => !entry.IsHidden && entry.LastPlayedUtc.HasValue)
             .OrderByDescending(entry => entry.LastPlayedUtc)
             .FirstOrDefault();
 
@@ -1189,7 +1129,6 @@ try
 
         if (game is null)
         {
-            UpdateDashContinue(null, null);
             if (_homeSelected)
             {
                 ContinueHost.Visibility = Visibility.Visible;
@@ -1209,32 +1148,6 @@ try
         ContinueHost.Visibility = _homeSelected ? Visibility.Visible : Visibility.Collapsed;
         ContinueGameName.Text = game.Name.ToUpperInvariant();
         ContinueCoverBrush.ImageSource = LoadLocalImage(game.Cover);
-        UpdateDashContinue(game.Name, LoadLocalImage(game.Cover));
-    }
-
-    private void UpdateDashContinue(string? name, ImageSource? art)
-    {
-        if (DashContinueName is null) return;
-        DashContinueName.Text = string.IsNullOrEmpty(name) ? "Nothing to resume" : name;
-        DashContinueArtInner.Background = art is not null
-            ? new ImageBrush(art)
-            : new SolidColorBrush((Color)ColorConverter.ConvertFromString("#10FFFFFF"));
-    }
-
-    private void DashContinue_Click(object sender, MouseButtonEventArgs e)
-    {
-        var game = _allGames
-            .Where(entry => !entry.IsApplication && !entry.IsHidden && entry.LastPlayedUtc.HasValue)
-            .OrderByDescending(entry => entry.LastPlayedUtc)
-            .FirstOrDefault();
-        if (game is null) return;
-        CloseTaskSwitcher();
-        Show();
-        WindowState = WindowState.Maximized;
-        Activate();
-        Topmost = true;
-        Dispatcher.BeginInvoke(() => Topmost = false, DispatcherPriority.ApplicationIdle);
-        OpenGameDetails(game);
     }
 
     private static ImageSource? LoadLocalImage(string? path)
@@ -1291,7 +1204,7 @@ try
         {
             if (Keyboard.FocusedElement is not DependencyObject focused) return;
             var button = FindAncestor<Button>(focused);
-            if (button?.Tag is not GameEntry { IsApplication: false } || button.ContextMenu is null) return;
+            if (button?.Tag is not GameEntry || button.ContextMenu is null) return;
             button.ContextMenu.PlacementTarget = button;
             button.ContextMenu.Placement = PlacementMode.Center;
             button.ContextMenu.IsOpen = true;
@@ -1369,7 +1282,7 @@ try
         LaunchDetailsButton.Focus();
     }
 
-    private async void LaunchGame(GameEntry game)
+    internal async void LaunchGame(GameEntry game)
     {
         try
         {
@@ -1601,7 +1514,7 @@ try
     {
         if (_gameCoverHovered || _customBackgroundActive || _slideshowGames.Count == 0 ||
             GameDetailsPage.Visibility == Visibility.Visible ||
-            TaskSwitcherOverlay.Visibility == Visibility.Visible ||
+            IsWinKeyOverlayOpen ||
             SettingsOverlay.Visibility == Visibility.Visible ||
             PowerOverlay.Visibility == Visibility.Visible ||
             ConnectionsOverlay.Visibility == Visibility.Visible)
@@ -1807,7 +1720,7 @@ try
     private void RefreshBackgroundChoiceList()
     {
         var choices = _allGames
-            .Where(game => !game.IsApplication && !game.IsHidden && !string.IsNullOrWhiteSpace(game.Background) && File.Exists(game.Background))
+            .Where(game => !game.IsHidden && !string.IsNullOrWhiteSpace(game.Background) && File.Exists(game.Background))
             .OrderBy(game => game.Name, StringComparer.OrdinalIgnoreCase)
             .Select(game =>
             {
@@ -2145,8 +2058,6 @@ try
     }
     private void UpdatePerformanceModeButtons()
     {
-        if (DashPerfModeText is not null)
-            DashPerfModeText.Text = (_inputSettings.PerformanceMode ?? "Balanced").ToUpperInvariant();
     }
 
     private void ApplyPerformanceMode(bool reportStatus)
@@ -2263,17 +2174,45 @@ try
 
     private void HandleWindowsKey()
     {
-        if (TaskSwitcherOverlay.Visibility == Visibility.Visible)
+        if (IsWinKeyOverlayOpen)
         {
-            CloseTaskSwitcher();
+            CloseWinKeyOverlay();
             return;
         }
+        OpenWinKeyOverlay();
+    }
+
+    internal IReadOnlyList<GameEntry> VisibleGames => _allGames;
+    internal string CurrentPerformanceMode => _inputSettings.PerformanceMode ?? "Balanced";
+    internal bool IsWinKeyOverlayOpen => _winKeyOverlay?.IsVisible == true;
+
+    internal void OpenWinKeyOverlay()
+    {
+        CloseAltTabOverlay();
+        _winKeyOverlay ??= new WinKeyOverlayWindow(this);
+        _winKeyOverlay.OpenOverlay();
+    }
+
+    internal void CloseWinKeyOverlay() => _winKeyOverlay?.CloseOverlay();
+
+    internal void ApplyPerformanceModeFromOverlay(string mode)
+    {
+        if (mode is not ("Ultimate" or "Balanced" or "Eco")) return;
+        _inputSettings.PerformanceMode = mode;
+        try { ControllerSettingsStore.Save(_inputSettings); }
+        catch (Exception saveError) { ErrorLogStore.Log(saveError.Message, "Performance mode settings", saveError.ToString()); }
+        ApplyPerformanceMode(true);
+    }
+
+    internal void ShowNotificationCenter()
+    {
         Show();
         WindowState = WindowState.Maximized;
         Activate();
         Topmost = true;
         Dispatcher.BeginInvoke(() => Topmost = false, DispatcherPriority.ApplicationIdle);
-        ShowWinKeyOverlay();
+        PopulateNotifications();
+        NotificationCenterOverlay.Visibility = Visibility.Visible;
     }
 
     private void OpenSearchFromHome()
@@ -2314,7 +2253,7 @@ try
         if (string.IsNullOrEmpty(e.Text) || Keyboard.Modifiers.HasFlag(ModifierKeys.Control) ||
             Keyboard.Modifiers.HasFlag(ModifierKeys.Alt) || GameSearchBox.IsKeyboardFocusWithin) return;
         if (PowerOverlay.Visibility == Visibility.Visible || SettingsOverlay.Visibility == Visibility.Visible ||
-            ConnectionsOverlay.Visibility == Visibility.Visible || TaskSwitcherOverlay.Visibility == Visibility.Visible ||
+            ConnectionsOverlay.Visibility == Visibility.Visible ||
             ErrorLogOverlay.Visibility == Visibility.Visible ||
             GameDetailsPage.Visibility == Visibility.Visible || MetadataCorrectionOverlay.Visibility == Visibility.Visible) return;
         if (Keyboard.FocusedElement is TextBoxBase or PasswordBox or ComboBox) return;
@@ -2422,7 +2361,6 @@ try
 
     private void UpdateControllerCalibrationDisplay()
     {
-        if (TaskSwitcherOverlay.Visibility == Visibility.Visible) UpdateTaskControllerPrompts();
         if (_controller.IsConnected != _lastControllerConnected)
         {
             if (IsLoaded) ShowNotification(_controller.IsConnected
@@ -2604,24 +2542,15 @@ try
 
     private void OverlayContent_MouseDown(object sender, MouseButtonEventArgs e) => e.Handled = true;
 
-    private void TaskSwitcherContent_MouseDown(object sender, MouseButtonEventArgs e)
-    {
-        if (FindAncestor<Button>(e.OriginalSource as DependencyObject) is not null) return;
-        CloseTaskSwitcher();
-        e.Handled = true;
-    }
-
     private void DismissibleOverlay_MouseDown(object sender, MouseButtonEventArgs e)
     {
         if (!ReferenceEquals(e.OriginalSource, sender)) return;
         if (ReferenceEquals(sender, ConnectionsOverlay)) ConnectionsOverlay.Visibility = Visibility.Collapsed;
-        else if (ReferenceEquals(sender, TaskSwitcherOverlay)) CloseTaskSwitcher();
         else if (ReferenceEquals(sender, ErrorLogOverlay)) CloseErrorLog();
         else if (ReferenceEquals(sender, AccessoriesOverlay)) AccessoriesOverlay.Visibility = Visibility.Collapsed;
         else if (ReferenceEquals(sender, MetadataCorrectionOverlay))
             CancelMetadataCorrection_Click(this, new RoutedEventArgs());
         else if (ReferenceEquals(sender, NotificationCenterOverlay)) NotificationCenterOverlay.Visibility = Visibility.Collapsed;
-        else if (ReferenceEquals(sender, UpdateOverlay)) UpdateOverlay.Visibility = Visibility.Collapsed;
     }
 
     private void CloseSettings()
@@ -2768,12 +2697,6 @@ try
         if (e.Key == Key.Escape && ConnectionsOverlay.Visibility == Visibility.Visible)
         {
             ConnectionsOverlay.Visibility = Visibility.Collapsed; e.Handled = true; return;
-        }
-        if (e.Key == Key.Escape && TaskSwitcherOverlay.Visibility == Visibility.Visible)
-        {
-            CloseTaskSwitcher();
-            e.Handled = true;
-            return;
         }
         if (e.Key == Key.Escape && ErrorLogOverlay.Visibility == Visibility.Visible)
         {
@@ -3001,7 +2924,6 @@ try
         if (MetadataCorrectionOverlay.Visibility == Visibility.Visible) return MetadataCorrectionOverlay;
         if (ConnectionsOverlay.Visibility == Visibility.Visible) return ConnectionsOverlay;
         if (SettingsOverlay.Visibility == Visibility.Visible) return SettingsOverlay;
-        if (TaskSwitcherOverlay.Visibility == Visibility.Visible) return TaskSwitcherOverlay;
         return null;
     }
 
@@ -3012,109 +2934,7 @@ try
         if (button?.Tag is GameEntry application) _lastHomeSelection = application.Name;
     }
 
-    private void ShowWinKeyOverlay()
-    {
-        CloseAltTabOverlay();
-        CapturePreviousForegroundWindow();
-        _suppressFocusRestore = false;
-        Topmost = true;
-        var shellHandle = new WindowInteropHelper(this).Handle;
-        SetForegroundWindow(shellHandle);
-        _winKeyWindows = GetTaskWindows(shellHandle);
-        TaskWindowList.ItemsSource = _winKeyWindows;
-        WinKeyWindowsSection.Visibility = _winKeyWindows.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
-        WinKeyAppsSection.Visibility = Visibility.Collapsed;
-        WinKeyEmptyHint.Visibility = Visibility.Collapsed;
-        RefreshWinKeyApps(string.Empty);
-        UpdateTaskControllerPrompts();
-        RefreshDashboard();
-        TaskSwitcherOverlay.Visibility = Visibility.Visible;
-        Dispatcher.BeginInvoke(() =>
-        {
-            WinKeySearchBox.Clear();
-            WinKeySearchBox.Focus();
-            UpdateLayout();
-            RegisterTaskThumbnails();
-        }, DispatcherPriority.Loaded);
-    }
-
-    private async void RefreshDashboard()
-    {
-        RefreshNotificationsContainer();
-        UpdateContinuePlaying();
-        UpdatePerformanceModeButtons();
-        await UpdateMediaControlsAsync();
-    }
-
-    private void WinKeySearchBox_TextChanged(object sender, TextChangedEventArgs e)
-    {
-        if (!IsInitialized || TaskSwitcherOverlay.Visibility != Visibility.Visible) return;
-        var query = WinKeySearchBox.Text.Trim();
-        RefreshWinKeyApps(query);
-        // Filter windows by query
-        if (string.IsNullOrWhiteSpace(query))
-        {
-            TaskWindowList.ItemsSource = _winKeyWindows;
-            WinKeyWindowsSection.Visibility = _winKeyWindows.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
-            WinKeyEmptyHint.Visibility = Visibility.Collapsed;
-        }
-        else
-        {
-            var filtered = _winKeyWindows
-                .Where(w => w.Title.Contains(query, StringComparison.OrdinalIgnoreCase) ||
-                            w.ProcessName.Contains(query, StringComparison.OrdinalIgnoreCase))
-                .ToList();
-            TaskWindowList.ItemsSource = filtered;
-            WinKeyWindowsSection.Visibility = filtered.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
-            // Show empty hint if neither section has results
-            WinKeyEmptyHint.Visibility = (WinKeyAppsSection.Visibility != Visibility.Visible && filtered.Count == 0)
-                ? Visibility.Visible : Visibility.Collapsed;
-        }
-        Dispatcher.BeginInvoke(() => RegisterTaskThumbnails(), DispatcherPriority.Loaded);
-    }
-
-    private void WinKeySearchBox_GotKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
-    {
-        if (WinKeySearchBorder is null) return;
-        WinKeySearchBorder.BorderBrush = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#66FF003C"));
-        WinKeySearchGlyph.Text = "\uEDB8";
-        WinKeySearchGlyph.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#FF003C"));
-    }
-
-    private void WinKeySearchBox_LostKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
-    {
-        if (WinKeySearchBorder is null) return;
-        WinKeySearchBorder.BorderBrush = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#14FFFFFF"));
-        WinKeySearchGlyph.Text = string.Empty;
-    }
-
-    private void RefreshWinKeyApps(string query)
-    {
-        var allApps = _allGames.Where(g => !g.IsHidden).ToList();
-        if (!string.IsNullOrWhiteSpace(query))
-        {
-            allApps = allApps.Where(a => a.Name.Contains(query, StringComparison.OrdinalIgnoreCase)).ToList();
-            WinKeyAppsList.ItemsSource = allApps.Take(20).ToList();
-            WinKeyAppsSection.Visibility = allApps.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
-        }
-        else
-        {
-            WinKeyAppsList.ItemsSource = null;
-            WinKeyAppsSection.Visibility = Visibility.Collapsed;
-        }
-    }
-
-    private void WinKeyApp_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is not Button { Tag: GameEntry game }) return;
-        CloseTaskSwitcher();
-        if (game.IsApplication) LaunchApplication(game);
-        else LaunchGame(game);
-    }
-
-    private void ShowTaskSwitcher() => ShowWinKeyOverlay();
-
-    private static List<TaskWindowEntry> GetTaskWindows(IntPtr shellHandle)
+private static List<TaskWindowEntry> GetTaskWindows(IntPtr shellHandle)
     {
         var windows = new List<TaskWindowEntry>();
         EnumWindows((handle, _) =>
@@ -3143,21 +2963,6 @@ try
             return true;
         }, IntPtr.Zero);
         return windows;
-    }
-
-    private void CloseTaskSwitcher()
-    {
-        foreach (var thumbnail in _taskThumbnails) DwmUnregisterThumbnail(thumbnail);
-        _taskThumbnails.Clear();
-        TaskSwitcherOverlay.Visibility = Visibility.Collapsed;
-        TaskWindowList.ItemsSource = null;
-        WinKeyAppsList.ItemsSource = null;
-        WinKeyWindowsSection.Visibility = Visibility.Collapsed;
-        WinKeyAppsSection.Visibility = Visibility.Collapsed;
-        WinKeyEmptyHint.Visibility = Visibility.Collapsed;
-        WinKeySearchBox.Text = string.Empty;
-        Topmost = false;
-        RestorePreviousForegroundWindow();
     }
 
     private void CapturePreviousForegroundWindow()
@@ -3218,12 +3023,6 @@ try
         return true;
     }
 
-    private void TaskWindow_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is not Button { Tag: TaskWindowEntry window }) return;
-        ActivateTaskWindow(window);
-    }
-
     private void HomeTaskWindow_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not Button { Tag: TaskWindowEntry window }) return;
@@ -3238,17 +3037,6 @@ try
         _homeTaskThumbnails.Clear();
         HomeTaskWindowsHost.Visibility = Visibility.Collapsed;
         HomeTaskWindowList.ItemsSource = null;
-    }
-
-    private void ActivateFocusedTaskWindow()
-    {
-        if (TaskSwitcherOverlay.Visibility != Visibility.Visible) return;
-        var focused = Keyboard.FocusedElement as DependencyObject;
-        var button = focused is null ? null : FindAncestor<Button>(focused);
-        if (button?.Tag is TaskWindowEntry window) ActivateTaskWindow(window);
-        else if (TaskWindowList.ItemsSource is IEnumerable<TaskWindowEntry> windows && windows.FirstOrDefault() is { } first)
-            ActivateTaskWindow(first);
-        else CloseTaskSwitcher();
     }
 
     private void ShowAltTabOverlay()
@@ -3404,17 +3192,14 @@ try
         AltTabStripList.ItemsSource = null;
         AltTabOverlay.Visibility = Visibility.Collapsed;
         _altTabActive = false;
-        if (TaskSwitcherOverlay.Visibility != Visibility.Visible)
-        {
-            Topmost = false;
-            RestorePreviousForegroundWindow();
-        }
+        Topmost = false;
+        RestorePreviousForegroundWindow();
     }
 
     private void ActivateTaskWindow(TaskWindowEntry window)
     {
         _suppressFocusRestore = true;
-        CloseTaskSwitcher();
+        CloseWinKeyOverlay();
         CloseAltTabOverlay();
         Topmost = false;
         ShowWindow(window.Handle, 9);
@@ -3436,38 +3221,6 @@ try
             if (foregroundThread != currentThread) AttachThreadInput(currentThread, foregroundThread, false);
         }
         _suppressFocusRestore = false;
-    }
-
-    private void RegisterTaskThumbnails()
-    {
-        foreach (var thumbnail in _taskThumbnails) DwmUnregisterThumbnail(thumbnail);
-        _taskThumbnails.Clear();
-        var destination = new WindowInteropHelper(this).Handle;
-        var dpi = VisualTreeHelper.GetDpi(this);
-        foreach (var preview in FindVisualChildren<Border>(TaskWindowList)
-                     .Where(border => border.Tag is TaskWindowEntry && border.IsVisible))
-        {
-            var window = (TaskWindowEntry)preview.Tag;
-            if (DwmRegisterThumbnail(destination, window.Handle, out var thumbnail) != 0 || thumbnail == IntPtr.Zero)
-                continue;
-            var point = preview.TransformToAncestor(this).Transform(new Point(0, 0));
-            var properties = new DwmThumbnailProperties
-            {
-                Flags = 0x1 | 0x4 | 0x8 | 0x10,
-                Destination = new NativeRect
-                {
-                    Left = (int)Math.Round(point.X * dpi.DpiScaleX),
-                    Top = (int)Math.Round(point.Y * dpi.DpiScaleY),
-                    Right = (int)Math.Round((point.X + preview.ActualWidth) * dpi.DpiScaleX),
-                    Bottom = (int)Math.Round((point.Y + preview.ActualHeight) * dpi.DpiScaleY)
-                },
-                Opacity = 255,
-                Visible = true,
-                SourceClientAreaOnly = false
-            };
-            DwmUpdateThumbnailProperties(thumbnail, ref properties);
-            _taskThumbnails.Add(thumbnail);
-        }
     }
 
     private void RegisterHomeTaskThumbnails()
@@ -3503,7 +3256,6 @@ try
     {
         var controllerActive = _controller.IsConnected;
         ControllerGuideBar.Visibility = controllerActive && _inputSettings.ShowButtonGuide ? Visibility.Visible : Visibility.Collapsed;
-        TaskControllerPrompts.Visibility = controllerActive && TaskSwitcherOverlay.Visibility == Visibility.Visible ? Visibility.Visible : Visibility.Collapsed;
         if (!controllerActive) return;
 
         var profile = _inputSettings.Controllers.TryGetValue(_controller.ConnectedControllerName, out var saved)
@@ -3513,8 +3265,6 @@ try
         var back = profile.Bindings.GetValueOrDefault(ControllerCommand.Back, ControllerButton.B);
         var previousTab = profile.Bindings.GetValueOrDefault(ControllerCommand.PreviousTab, ControllerButton.LeftShoulder);
         var nextTab = profile.Bindings.GetValueOrDefault(ControllerCommand.NextTab, ControllerButton.RightShoulder);
-        TaskAcceptButtonGlyph.Text = ControllerButtonGlyph(accept, _controller.ConnectedControllerName);
-        TaskBackButtonGlyph.Text = ControllerButtonGlyph(back, _controller.ConnectedControllerName);
         GuideAcceptGlyph.Text = ControllerButtonGlyph(accept, _controller.ConnectedControllerName);
         GuidePreviousTabGlyph.Text = ControllerButtonGlyph(previousTab, _controller.ConnectedControllerName);
         GuideNextTabGlyph.Text = ControllerButtonGlyph(nextTab, _controller.ConnectedControllerName);
@@ -3581,7 +3331,6 @@ try
         FlashBackButton();
         if (AccessoriesOverlay.Visibility == Visibility.Visible) AccessoriesOverlay.Visibility = Visibility.Collapsed;
         else if (ConnectionsOverlay.Visibility == Visibility.Visible) ConnectionsOverlay.Visibility = Visibility.Collapsed;
-        else if (TaskSwitcherOverlay.Visibility == Visibility.Visible) CloseTaskSwitcher();
         else if (ErrorLogOverlay.Visibility == Visibility.Visible) CloseErrorLog();
         else if (MetadataCorrectionOverlay.Visibility == Visibility.Visible)
             CancelMetadataCorrection_Click(this, new RoutedEventArgs());
@@ -3706,6 +3455,8 @@ try
             _controller.Dispose();
             _gameSession.Dispose();
             _keyboardGuard?.Dispose();
+            _winKeyOverlay?.ForceClose();
+            _batteryOverlay?.ForceClose();
         }
         base.OnClosing(e);
     }
