@@ -24,3 +24,6 @@ OmenGamingShell.Installer/Payload/OmenGamingShell.zip
 /WinRT.Runtime.dll
 /wpfgfx_cor3.dll
 /vcruntime140_cor3.dll
+
+# Local smoke-test screenshots
+/overlay-shots/

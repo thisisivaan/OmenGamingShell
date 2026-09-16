@@ -12,6 +12,13 @@ public partial class MainWindow
 {
     private DispatcherTimer _perfTimer = new() { Interval = TimeSpan.FromSeconds(3) };
     private DispatcherTimer _mediaPollTimer = new() { Interval = TimeSpan.FromSeconds(2) };
+    private readonly DispatcherTimer _volumeBrightnessTimer = new() { Interval = TimeSpan.FromMilliseconds(150) };
+    private int _lastVolumePct = -1;
+    private int _lastBrightnessPct = -1;
+    private DateTime _lastBrightnessPollUtc = DateTime.MinValue;
+    private bool _volumeDragging;
+    private bool _brightnessDragging;
+    private VolumeBrightnessOsd? _osd;
     private int _onboardingStep;
     private readonly string[][] _onboardingSteps = new[]
     {
@@ -39,6 +46,9 @@ public partial class MainWindow
         // events) still appears without delay.
         _mediaPollTimer.Tick += async (_, _) => await UpdateMediaControlsAsync();
         _mediaPollTimer.Start();
+
+        // Volume & brightness - live bars + Windows-style OSD on any change
+        InitVolumeBrightness();
 
         // Clipboard history
         ClipboardHistory.Start(Dispatcher);
@@ -467,53 +477,52 @@ public partial class MainWindow
     }
 
     // --- Volume & Brightness ---
-    private float _currentVolume = 1.0f;
 
     private void InitVolumeBrightness()
     {
-        try { UpdateVolumeDisplay(); } catch { }
-        try { UpdateBrightnessDisplay(); } catch { }
+        _ = Dispatcher.BeginInvoke(() =>
+        {
+            try
+            {
+                var vol = (int)Math.Round(SystemAudio.GetVolume());
+                _lastVolumePct = vol;
+                UpdateVolumeUI(vol);
+            }
+            catch { }
+        });
+        _ = RefreshBrightnessAsync();
+        _volumeBrightnessTimer.Tick += async (_, _) => await PollVolumeBrightnessAsync();
+        _volumeBrightnessTimer.Start();
     }
 
-    private void UpdateVolumeDisplay()
+    private Task PollVolumeBrightnessAsync()
     {
         try
         {
-            var cmd = "Get-AudioDevice -PlaybackVolume 2>$null";
-            var psi = new System.Diagnostics.ProcessStartInfo("powershell", "-NoProfile -Command " + Quote(cmd))
-            { RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true };
-            var proc = System.Diagnostics.Process.Start(psi);
-            var output = proc?.StandardOutput.ReadToEnd()?.Trim() ?? "100";
-            proc?.WaitForExit(3000);
-            if (float.TryParse(output, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var vol))
+            if (!_volumeDragging)
             {
-                var pct = Math.Clamp(vol > 1 ? vol : vol * 100, 0, 100);
-                _currentVolume = pct / 100f;
-                _ = Dispatcher.BeginInvoke(() =>
+                var vol = (int)Math.Round(SystemAudio.GetVolume());
+                if (_lastVolumePct < 0) _lastVolumePct = vol;
+                if (vol != _lastVolumePct)
                 {
-                    VolumeBarFill.Width = 48.0 * pct / 100.0;
-                    VolumeText.Text = ((int)pct).ToString();
-                });
+                    _lastVolumePct = vol;
+                    UpdateVolumeUI(vol);
+                    ShowOsd(vol, false);
+                }
             }
         }
         catch { }
-    }
 
-    private void VolumeBar_Click(object sender, MouseButtonEventArgs e)
-    {
-        try
+        // Brightness WMI reads are expensive - throttle to ~1.5s.
+        if ((DateTime.UtcNow - _lastBrightnessPollUtc).TotalMilliseconds >= 1500 && !_brightnessDragging)
         {
-            var bar = (FrameworkElement)sender;
-            var pos = e.GetPosition(bar);
-            var pct = Math.Clamp(pos.X / bar.ActualWidth, 0, 1);
-            _currentVolume = (float)pct;
-            VolumeBarFill.Width = 48.0 * pct;
-            VolumeText.Text = ((int)(pct * 100)).ToString();
+            _lastBrightnessPollUtc = DateTime.UtcNow;
+            _ = RefreshBrightnessAsync();
         }
-        catch { }
+        return Task.CompletedTask;
     }
 
-    private void UpdateBrightnessDisplay()
+    private static int? ReadBrightness()
     {
         try
         {
@@ -521,34 +530,163 @@ public partial class MainWindow
             var psi = new System.Diagnostics.ProcessStartInfo("powershell", "-NoProfile -Command " + Quote(cmd))
             { RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true };
             var proc = System.Diagnostics.Process.Start(psi);
-            var output = proc?.StandardOutput.ReadToEnd()?.Trim() ?? "100";
+            var output = proc?.StandardOutput.ReadToEnd()?.Trim() ?? null;
             proc?.WaitForExit(3000);
-            if (int.TryParse(output, out var bright))
-            {
-                _ = Dispatcher.BeginInvoke(() => { BrightnessBarFill.Width = 48.0 * bright / 100.0;
-                    BrightnessText.Text = bright.ToString();
-                });
-            }
+            if (int.TryParse(output, out var bright)) return bright;
         }
         catch { }
+        return null;
     }
 
-    private void BrightnessBar_Click(object sender, MouseButtonEventArgs e)
+    private async Task RefreshBrightnessAsync()
+    {
+        var bright = await Task.Run(ReadBrightness);
+        if (bright is null) return;
+        _ = Dispatcher.BeginInvoke(() =>
+        {
+            if (_lastBrightnessPct < 0) _lastBrightnessPct = bright.Value;
+            if (bright.Value != _lastBrightnessPct)
+            {
+                _lastBrightnessPct = bright.Value;
+                UpdateBrightnessUI(bright.Value);
+                ShowOsd(bright.Value, true);
+            }
+        });
+    }
+
+    private static void SetSystemBrightness(int percent)
     {
         try
         {
-            var bar = (FrameworkElement)sender;
-            var pos = e.GetPosition(bar);
-            var pct = Math.Clamp(pos.X / bar.ActualWidth, 0, 1);
-            var bright = (int)(pct * 100);
-            BrightnessBarFill.Width = 48.0 * pct;
-            BrightnessText.Text = bright.ToString();
-            var cmd = "Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods | Invoke-CimMethod -MethodName WmiSetBrightness -Argument @{Brightness=" + bright + "; Timeout=1}";
+            var cmd = "Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods | Invoke-CimMethod -MethodName WmiSetBrightness -Argument @{Brightness=" + percent + "; Timeout=1}";
             var psi = new System.Diagnostics.ProcessStartInfo("powershell", "-NoProfile -Command " + Quote(cmd))
             { UseShellExecute = false, CreateNoWindow = true };
             System.Diagnostics.Process.Start(psi);
         }
         catch { }
+    }
+
+    private void UpdateVolumeUI(int pct)
+    {
+        var track = VolumeBarTrack.ActualWidth;
+        if (track <= 0) track = 140;
+        var fill = track * Math.Clamp(pct, 0, 100) / 100.0;
+        VolumeBarFill.Width = fill;
+        VolumeThumb.Margin = new Thickness(Math.Clamp(fill - 6.5, 0, track - 13), 0, 0, 0);
+        VolumeText.Text = pct.ToString();
+    }
+
+    private void UpdateBrightnessUI(int pct)
+    {
+        var track = BrightnessBarTrack.ActualWidth;
+        if (track <= 0) track = 140;
+        var fill = track * Math.Clamp(pct, 0, 100) / 100.0;
+        BrightnessBarFill.Width = fill;
+        BrightnessThumb.Margin = new Thickness(Math.Clamp(fill - 6.5, 0, track - 13), 0, 0, 0);
+        BrightnessText.Text = pct.ToString();
+    }
+
+    private void ShowOsd(int pct, bool isBrightness)
+    {
+        if (_osd is null)
+        {
+            _osd = new VolumeBrightnessOsd();
+            _osd.Closed += (_, _) => _osd = null;
+        }
+        _osd.ShowOsd(pct, isBrightness);
+    }
+
+    public void ShowVolumeOsd(int pct)
+    {
+        _ = Dispatcher.BeginInvoke(() => ShowOsd(pct, false));
+    }
+
+    // --- Volume slider drag ---
+    private void VolumeBar_MouseDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton != MouseButton.Left) return;
+        _volumeDragging = true;
+        VolumeRow.CaptureMouse();
+        VolumeSetFromPosition(e.GetPosition(VolumeBarTrack));
+        e.Handled = true;
+    }
+
+    private void VolumeBar_MouseMove(object sender, MouseEventArgs e)
+    {
+        if (_volumeDragging && e.LeftButton == MouseButtonState.Pressed)
+            VolumeSetFromPosition(e.GetPosition(VolumeBarTrack));
+    }
+
+    private void VolumeBar_MouseUp(object sender, MouseButtonEventArgs e)
+    {
+        if (!_volumeDragging) return;
+        _volumeDragging = false;
+        VolumeRow.ReleaseMouseCapture();
+        e.Handled = true;
+    }
+
+    private void VolumeSetFromPosition(Point pos)
+    {
+        var track = VolumeBarTrack.ActualWidth;
+        if (track <= 0) return;
+        var pct = (int)Math.Round(Math.Clamp(pos.X / track, 0, 1) * 100);
+        SystemAudio.SetVolume(pct);
+        _lastVolumePct = pct;
+        UpdateVolumeUI(pct);
+        ShowOsd(pct, false);
+    }
+
+    private void VolumeBar_MouseLeave(object sender, MouseEventArgs e)
+    {
+        if (_volumeDragging)
+        {
+            _volumeDragging = false;
+            VolumeRow.ReleaseMouseCapture();
+        }
+    }
+
+    // --- Brightness slider drag ---
+    private void BrightnessBar_MouseDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton != MouseButton.Left) return;
+        _brightnessDragging = true;
+        BrightnessRow.CaptureMouse();
+        BrightnessSetFromPosition(e.GetPosition(BrightnessBarTrack));
+        e.Handled = true;
+    }
+
+    private void BrightnessBar_MouseMove(object sender, MouseEventArgs e)
+    {
+        if (_brightnessDragging && e.LeftButton == MouseButtonState.Pressed)
+            BrightnessSetFromPosition(e.GetPosition(BrightnessBarTrack));
+    }
+
+    private void BrightnessBar_MouseUp(object sender, MouseButtonEventArgs e)
+    {
+        if (!_brightnessDragging) return;
+        _brightnessDragging = false;
+        BrightnessRow.ReleaseMouseCapture();
+        e.Handled = true;
+    }
+
+    private void BrightnessSetFromPosition(Point pos)
+    {
+        var track = BrightnessBarTrack.ActualWidth;
+        if (track <= 0) return;
+        var pct = (int)Math.Round(Math.Clamp(pos.X / track, 0, 1) * 100);
+        SetSystemBrightness(pct);
+        _lastBrightnessPct = pct;
+        UpdateBrightnessUI(pct);
+        ShowOsd(pct, true);
+    }
+
+    private void BrightnessBar_MouseLeave(object sender, MouseEventArgs e)
+    {
+        if (_brightnessDragging)
+        {
+            _brightnessDragging = false;
+            BrightnessRow.ReleaseMouseCapture();
+        }
     }
 
         private static string Quote(string s)

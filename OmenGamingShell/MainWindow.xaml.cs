@@ -3123,7 +3123,7 @@ private static List<TaskWindowEntry> GetTaskWindows(IntPtr shellHandle)
                 Destination = GetThumbnailRect16To9(preview, dpi.DpiScaleX, dpi.DpiScaleY),
                 Opacity = 255,
                 Visible = true,
-                SourceClientAreaOnly = false
+                SourceClientAreaOnly = true
             };
             DwmUpdateThumbnailProperties(thumbnail, ref properties);
             _altTabStripThumbnails.Add(thumbnail);
@@ -3177,7 +3177,7 @@ private static List<TaskWindowEntry> GetTaskWindows(IntPtr shellHandle)
             },
             Opacity = 255,
             Visible = true,
-            SourceClientAreaOnly = false
+            SourceClientAreaOnly = true
         };
         DwmUpdateThumbnailProperties(thumbnail, ref properties);
         _altTabThumbnail = thumbnail;

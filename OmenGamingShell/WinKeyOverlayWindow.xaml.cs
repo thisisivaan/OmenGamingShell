@@ -15,7 +15,6 @@ public partial class WinKeyOverlayWindow : Window
 {
     private readonly MainWindow _shell;
     private IReadOnlyList<TaskWindowEntry> _windows = Array.Empty<TaskWindowEntry>();
-    private readonly List<IntPtr> _thumbnails = new();
     private IntPtr _previousForeground;
     private bool _suppressRestore;
     private bool _overlayOpen;
@@ -46,13 +45,14 @@ public partial class WinKeyOverlayWindow : Window
         RefreshApps(string.Empty);
         RefreshDashboardSafe();
         UpdatePerfModeDisplay();
+        _ = Task.Run(() => { var _ = InstalledAppsCatalog.GetApps(); });
 
         Dispatcher.BeginInvoke(() =>
         {
             SearchBox.Clear();
             SearchBox.Focus();
             UpdateLayout();
-            RegisterThumbnails();
+            RefreshCaptures();
             _dashboardTimer.Start();
         }, DispatcherPriority.Loaded);
     }
@@ -63,10 +63,14 @@ public partial class WinKeyOverlayWindow : Window
         _overlayOpen = false;
         _dashboardTimer.Stop();
 
-        foreach (var thumb in _thumbnails) DwmUnregisterThumbnail(thumb);
-        _thumbnails.Clear();
-
         SearchBox.Text = string.Empty;
+        WindowList.ItemsSource = null;
+        AppsList.ItemsSource = null;
+        WindowsSection.Visibility = Visibility.Collapsed;
+        AppsSection.Visibility = Visibility.Collapsed;
+        EmptyHint.Visibility = Visibility.Collapsed;
+
+        Hide();
         WindowList.ItemsSource = null;
         AppsList.ItemsSource = null;
         WindowsSection.Visibility = Visibility.Collapsed;
@@ -83,6 +87,28 @@ public partial class WinKeyOverlayWindow : Window
     {
         _suppressRestore = true;
         CloseOverlay(false);
+    }
+
+    private void Overlay_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (!_overlayOpen) return;
+        if (SearchBox.IsKeyboardFocused) return;
+        var key = e.Key;
+        bool isPrintable = key is >= Key.A and <= Key.Z ||
+                           key is >= Key.D0 and <= Key.D9 ||
+                           key is >= Key.NumPad0 and <= Key.NumPad9 ||
+                           key == Key.Space || key == Key.Oem1 || key == Key.Oem2 ||
+                           key == Key.Oem3 || key == Key.Oem4 || key == Key.Oem5 ||
+                           key == Key.Oem6 || key == Key.Oem7 || key == Key.Oem8 ||
+                           key == Key.Oem102 || key == Key.OemPeriod || key == Key.OemComma ||
+                           key == Key.OemMinus || key == Key.OemPlus || key == Key.OemQuestion ||
+                           key == Key.OemQuotes || key == Key.OemSemicolon ||
+                           key == Key.Back || key == Key.Delete;
+        if (isPrintable)
+        {
+            SearchBox.Focus();
+            SearchBox.CaretIndex = SearchBox.Text.Length;
+        }
     }
 
     private void Overlay_KeyDown(object sender, KeyEventArgs e)
@@ -112,10 +138,27 @@ public partial class WinKeyOverlayWindow : Window
 
     private void PositionOnCurrentMonitor()
     {
-        var fg = _previousForeground != IntPtr.Zero ? _previousForeground : new WindowInteropHelper(_shell).Handle;
-        var monitor = MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST);
+        var monitor = IntPtr.Zero;
+        if (_previousForeground != IntPtr.Zero)
+            monitor = MonitorFromWindow(_previousForeground, MONITOR_DEFAULTTONEAREST);
+        if (monitor == IntPtr.Zero)
+        {
+            GetCursorPos(out var cursor);
+            monitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST);
+        }
+        if (monitor == IntPtr.Zero)
+            monitor = MonitorFromWindow(new WindowInteropHelper(_shell).Handle, MONITOR_DEFAULTTONEAREST);
+        if (monitor == IntPtr.Zero) return;
+
         var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
-        if (!GetMonitorInfo(monitor, ref info)) return;
+        if (!GetMonitorInfo(monitor, ref info))
+        {
+            Left = 0;
+            Top = 0;
+            Width = SystemParameters.PrimaryScreenWidth;
+            Height = SystemParameters.PrimaryScreenHeight;
+            return;
+        }
         GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, out var dpiX, out var _);
         var scaleX = dpiX / 96.0;
         Left = info.Work.Left / scaleX;
@@ -166,12 +209,26 @@ public partial class WinKeyOverlayWindow : Window
 
     private void RefreshApps(string query)
     {
-        var allApps = _shell.VisibleGames;
+        var games = _shell.VisibleGames;
         if (!string.IsNullOrWhiteSpace(query))
         {
-            var filtered = allApps.Where(a => a.Name.Contains(query, StringComparison.OrdinalIgnoreCase)).ToList();
-            AppsList.ItemsSource = filtered.Take(20).ToList();
-            AppsSection.Visibility = filtered.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+            var results = new List<object>();
+            var installedApps = InstalledAppsCatalog.GetApps();
+            results.AddRange(games.Where(a => a.Name.Contains(query, StringComparison.OrdinalIgnoreCase)));
+            results.AddRange(installedApps.Where(a => a.Name.Contains(query, StringComparison.OrdinalIgnoreCase)));
+            var unique = results
+                .GroupBy(item => item switch
+                {
+                    GameEntry game => game.Name,
+                    AppEntry app => app.Name,
+                    _ => item.ToString()
+                }, StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.First())
+                .OrderBy(item => item switch { GameEntry game => game.Name, AppEntry app => app.Name, _ => "" },
+                    StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            AppsList.ItemsSource = unique;
+            AppsSection.Visibility = unique.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         }
         else
         {
@@ -203,20 +260,23 @@ public partial class WinKeyOverlayWindow : Window
         }
         EmptyHint.Visibility = (WindowsSection.Visibility != Visibility.Visible && AppsSection.Visibility != Visibility.Visible)
             ? Visibility.Visible : Visibility.Collapsed;
-        Dispatcher.BeginInvoke(() => RegisterThumbnails(), DispatcherPriority.Loaded);
+        Dispatcher.BeginInvoke(() => RefreshCaptures(), DispatcherPriority.Loaded);
     }
 
     private void SearchBox_GotKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
     {
         SearchBorder.BorderBrush = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#66FF003C"));
-        SearchGlyph.Text = "\uEDB8";
-        SearchGlyph.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#FF003C"));
     }
 
     private void SearchBox_LostKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
     {
         SearchBorder.BorderBrush = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#14FFFFFF"));
-        SearchGlyph.Text = string.Empty;
+    }
+
+    private void SearchButton_Click(object sender, RoutedEventArgs e)
+    {
+        SearchBox.Focus();
+        SearchBox.CaretIndex = SearchBox.Text.Length;
     }
 
     private void TaskWindow_Click(object sender, RoutedEventArgs e)
@@ -229,9 +289,17 @@ public partial class WinKeyOverlayWindow : Window
 
     private void App_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is not Button { Tag: GameEntry game }) return;
+        if (sender is not Button { Tag: not null } button) return;
         CloseOverlay();
-        _shell.LaunchGame(game);
+        switch (button.Tag)
+        {
+            case GameEntry game:
+                _shell.LaunchGame(game);
+                break;
+            case AppEntry app:
+                app.Launch();
+                break;
+        }
     }
 
     private void PerformanceMode_Click(object sender, RoutedEventArgs e)
@@ -243,12 +311,41 @@ public partial class WinKeyOverlayWindow : Window
 
     private void MediaPlay_Click(object sender, RoutedEventArgs e) => _ = MediaService.TogglePlayPauseAsync();
 
-    private void ContinueClick(object sender, MouseButtonEventArgs e)
+    private void MediaPrev_Click(object sender, RoutedEventArgs e) => _ = MediaService.PreviousAsync();
+
+    private void MediaNext_Click(object sender, RoutedEventArgs e) => _ = MediaService.NextAsync();
+
+    private bool _volumeSliderSyncing;
+
+    private void VolumeSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
-        var game = _shell.VisibleGames
-            .Where(g => !g.IsHidden && g.LastPlayedUtc.HasValue)
-            .OrderByDescending(g => g.LastPlayedUtc)
-            .FirstOrDefault();
+        var percent = (int)Math.Round(Math.Clamp(e.NewValue, 0, 100));
+        VolumeValueText.Text = percent.ToString();
+        if (_volumeSliderSyncing) return;
+        SystemAudio.SetVolume(percent);
+        _shell.ShowVolumeOsd(percent);
+    }
+
+    private void MediaMute_Click(object sender, RoutedEventArgs e)
+    {
+        SystemAudio.SetMuted(!SystemAudio.IsMuted());
+        RefreshVolumeState();
+    }
+
+    private void RefreshVolumeState()
+    {
+        var percent = (int)Math.Round(SystemAudio.GetVolume());
+        var muted = SystemAudio.IsMuted();
+        _volumeSliderSyncing = true;
+        VolumeSlider.Value = percent;
+        _volumeSliderSyncing = false;
+        VolumeValueText.Text = percent.ToString();
+        MediaMuteButton.Content = muted ? "\uE74F" : "\uE767";
+    }
+
+    private void StoreClick(object sender, MouseButtonEventArgs e)
+    {
+        var game = FeaturedStoreGame();
         if (game is null) return;
         CloseOverlay();
         _shell.LaunchGame(game);
@@ -267,7 +364,8 @@ public partial class WinKeyOverlayWindow : Window
         {
             _ = RefreshMediaAsync();
             RefreshNotifications();
-            RefreshContinuePlaying();
+            RefreshStoreFeatured();
+            RefreshVolumeState();
         }
         catch { }
     }
@@ -285,23 +383,39 @@ public partial class WinKeyOverlayWindow : Window
         NotificationMessage.Text = latest?.Message ?? string.Empty;
     }
 
-    private void RefreshContinuePlaying()
+    private void RefreshStoreFeatured()
     {
-        var game = _shell.VisibleGames
-            .Where(g => !g.IsHidden && g.LastPlayedUtc.HasValue)
-            .OrderByDescending(g => g.LastPlayedUtc)
-            .FirstOrDefault();
+        var game = FeaturedStoreGame();
         if (game is null)
         {
-            ContinueName.Text = "Nothing to resume";
-            ContinueArtInner.Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#10FFFFFF"));
+            StoreGameName.Text = "Nothing featured";
+            StoreGameDev.Text = string.Empty;
+            StoreArtInner.Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#10FFFFFF"));
             return;
         }
-        ContinueName.Text = game.Name;
+        StoreGameName.Text = game.Name;
+        StoreGameDev.Text = string.Join("  •  ", new[] { game.Developer, game.Publisher }
+            .Where(value => !string.IsNullOrWhiteSpace(value)));
         var art = LoadLocalImage(game.Cover);
-        ContinueArtInner.Background = art is not null
+        StoreArtInner.Background = art is not null
             ? new ImageBrush(art)
             : new SolidColorBrush((Color)ColorConverter.ConvertFromString("#10FFFFFF"));
+    }
+
+    private GameEntry? FeaturedStoreGame()
+    {
+        var games = _shell.VisibleGames.Where(g => !g.IsHidden).ToList();
+        if (games.Count == 0) return null;
+        var favorite = games.FirstOrDefault(g => g.IsFavorite);
+        if (favorite is not null) return favorite;
+        var rated = games.FirstOrDefault(g => !string.IsNullOrWhiteSpace(g.Rating));
+        if (rated is not null) return rated;
+        var recentlyPlayed = games
+            .Where(g => g.LastPlayedUtc.HasValue)
+            .OrderByDescending(g => g.LastPlayedUtc)
+            .FirstOrDefault();
+        if (recentlyPlayed is not null) return recentlyPlayed;
+        return games[Math.Min(games.Count - 1, new Random().Next(games.Count))];
     }
 
     private async Task RefreshMediaAsync()
@@ -327,7 +441,7 @@ public partial class WinKeyOverlayWindow : Window
         {
             MediaTitle.Text = media is not null ? media.Title : "No media";
             MediaArtist.Text = media?.Artist ?? string.Empty;
-            MediaPlayButton.Content = media is { IsPlaying: true } ? "PAUSE" : "PLAY";
+            MediaPlayButton.Content = media is { IsPlaying: true } ? "\uEDB4" : "\uEDB8";
             MediaPlayButton.Visibility = media is null ? Visibility.Collapsed : Visibility.Visible;
             if (albumArt is not null) MediaArt.Background = new ImageBrush(albumArt);
             else MediaArt.Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#10FFFFFF"));
@@ -351,35 +465,25 @@ public partial class WinKeyOverlayWindow : Window
         return image;
     }
 
-    private void RegisterThumbnails()
+    private void RefreshCaptures()
     {
-        foreach (var thumb in _thumbnails) DwmUnregisterThumbnail(thumb);
-        _thumbnails.Clear();
-        var destination = new WindowInteropHelper(this).Handle;
-        var dpi = VisualTreeHelper.GetDpi(this);
-        foreach (var preview in FindVisualChildren<Border>(WindowList)
-                     .Where(border => border.Tag is TaskWindowEntry && border.IsVisible))
+        var nonce = unchecked(DateTime.UtcNow.Ticks);
+        foreach (var border in FindVisualChildren<Border>(WindowList)
+                     .Where(b => b.Tag is TaskWindowEntry && b.IsVisible))
         {
-            var window = (TaskWindowEntry)preview.Tag;
-            if (DwmRegisterThumbnail(destination, window.Handle, out var thumbnail) != 0 || thumbnail == IntPtr.Zero)
-                continue;
-            var point = preview.TransformToAncestor(this).Transform(new Point(0, 0));
-            var properties = new DwmThumbnailProperties
+            var window = (TaskWindowEntry)border.Tag;
+            var target = border;
+            _ = Task.Run(async () =>
             {
-                Flags = 0x1 | 0x4 | 0x8 | 0x10,
-                Destination = new NativeRect
+                var image = window.Capture();
+                await Dispatcher.InvokeAsync(() =>
                 {
-                    Left = (int)Math.Round(point.X * dpi.DpiScaleX),
-                    Top = (int)Math.Round(point.Y * dpi.DpiScaleY),
-                    Right = (int)Math.Round((point.X + preview.ActualWidth) * dpi.DpiScaleX),
-                    Bottom = (int)Math.Round((point.Y + preview.ActualHeight) * dpi.DpiScaleY)
-                },
-                Opacity = 255,
-                Visible = true,
-                SourceClientAreaOnly = false
-            };
-            DwmUpdateThumbnailProperties(thumbnail, ref properties);
-            _thumbnails.Add(thumbnail);
+                    if (!_overlayOpen || target.Tag is not TaskWindowEntry) return;
+                    target.Background = image is null
+                        ? Brushes.Transparent
+                        : new ImageBrush(image) { Stretch = Stretch.UniformToFill };
+                }, DispatcherPriority.Background);
+            });
         }
     }
 
@@ -516,16 +620,14 @@ public partial class WinKeyOverlayWindow : Window
     [DllImport("user32.dll")]
     private static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint flags);
     [DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromPoint(NativePoint point, uint flags);
+    [DllImport("user32.dll")]
+    private static extern bool GetCursorPos(out NativePoint point);
+    [DllImport("user32.dll")]
     private static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo info);
     [DllImport("shcore.dll")]
     private static extern int GetDpiForMonitor(IntPtr monitor, int dpiType, out uint dpiX, out uint dpiY);
 
-    [DllImport("dwmapi.dll")]
-    private static extern int DwmRegisterThumbnail(IntPtr destinationWindow, IntPtr sourceWindow, out IntPtr thumbnail);
-    [DllImport("dwmapi.dll")]
-    private static extern int DwmUnregisterThumbnail(IntPtr thumbnail);
-    [DllImport("dwmapi.dll")]
-    private static extern int DwmUpdateThumbnailProperties(IntPtr thumbnail, ref DwmThumbnailProperties properties);
     [DllImport("dwmapi.dll")]
     private static extern int DwmGetWindowAttribute(IntPtr window, int attribute, out int value, int size);
 
@@ -536,24 +638,18 @@ public partial class WinKeyOverlayWindow : Window
     }
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct DwmThumbnailProperties
-    {
-        public uint Flags;
-        public NativeRect Destination;
-        public byte Opacity;
-        [MarshalAs(UnmanagedType.Bool)]
-        public bool Visible;
-        [MarshalAs(UnmanagedType.Bool)]
-        public bool SourceClientAreaOnly;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
     private struct MonitorInfo
     {
         public int Size;
         public NativeRect Monitor;
         public NativeRect Work;
         public uint Flags;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativePoint
+    {
+        public int X, Y;
     }
 
     private const uint MONITOR_DEFAULTTONEAREST = 2;

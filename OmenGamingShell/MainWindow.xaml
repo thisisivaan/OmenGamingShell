@@ -455,37 +455,60 @@
                             <Border x:Name="MediaProgressBar" Height="2" Background="#FF003C" CornerRadius="1" HorizontalAlignment="Left" Width="0" />
                         </Border>
                         <!-- Volume + Brightness -->
-                        <Grid Margin="3,6,3,0">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="12" />
-                                <ColumnDefinition Width="*" />
-                            </Grid.ColumnDefinitions>
-                            <Grid Grid.Column="0" VerticalAlignment="Center" MouseLeftButtonDown="VolumeBar_Click" Cursor="Hand">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto" />
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="&#xE767;" FontFamily="Segoe Fluent Icons" FontSize="11" Foreground="#707070" VerticalAlignment="Center" Margin="0,0,6,0" />
-                                <Border Grid.Column="1" Height="3" Background="#303030" CornerRadius="1.5" VerticalAlignment="Center">
-                                    <Border x:Name="VolumeBarFill" Height="3" Background="#FF003C" CornerRadius="1.5" HorizontalAlignment="Left" Width="0" />
-                                </Border>
-                                <TextBlock x:Name="VolumeText" Text="100" Grid.Column="2" FontSize="9" Foreground="#606060" VerticalAlignment="Center" Margin="6,0,0,0" MinWidth="22" TextAlignment="Right" />
-                            </Grid>
-                            <Grid Grid.Column="2" VerticalAlignment="Center" MouseLeftButtonDown="BrightnessBar_Click" Cursor="Hand">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto" />
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="&#xE706;" FontFamily="Segoe Fluent Icons" FontSize="11" Foreground="#707070" VerticalAlignment="Center" Margin="0,0,6,0" />
-                                <Border Grid.Column="1" Height="3" Background="#303030" CornerRadius="1.5" VerticalAlignment="Center">
-                                    <Border x:Name="BrightnessBarFill" Height="3" Background="#FF003C" CornerRadius="1.5" HorizontalAlignment="Left" Width="0" />
-                                </Border>
-                                <TextBlock x:Name="BrightnessText" Text="100" Grid.Column="2" FontSize="9" Foreground="#606060" VerticalAlignment="Center" Margin="6,0,0,0" MinWidth="22" TextAlignment="Right" />
-                            </Grid>
-                        </Grid>
+                        <StackPanel Margin="3,8,3,0">
+                            <!-- Volume -->
+                            <Border x:Name="VolumeRow" Height="23" Cursor="Hand" Background="Transparent"
+                                    MouseLeftButtonDown="VolumeBar_MouseDown" MouseLeftButtonUp="VolumeBar_MouseUp"
+                                    MouseMove="VolumeBar_MouseMove">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="&#xE767;" FontFamily="Segoe Fluent Icons" FontSize="13" Foreground="#707070" VerticalAlignment="Center" Margin="0,0,6,0" IsHitTestVisible="False" />
+                                    <Grid Grid.Column="1" x:Name="VolumeBarTrack" VerticalAlignment="Center" IsHitTestVisible="False">
+                                        <Border Height="8" Background="#303030" CornerRadius="4" />
+                                        <Border x:Name="VolumeBarFill" Height="8" Background="#FF003C" CornerRadius="4"
+                                                HorizontalAlignment="Left" Width="0" />
+                                        <Ellipse x:Name="VolumeThumb" Width="13" Height="13" Fill="#FF003C" Stroke="#22000000" StrokeThickness="1"
+                                                 HorizontalAlignment="Left" VerticalAlignment="Center" Margin="-6.5,0,0,0">
+                                            <Ellipse.Effect>
+                                                <DropShadowEffect BlurRadius="8" ShadowDepth="1" Opacity="0.5" Color="#000000" />
+                                            </Ellipse.Effect>
+                                        </Ellipse>
+                                    </Grid>
+                                    <TextBlock x:Name="VolumeText" Text="100" Grid.Column="2" FontSize="10" Foreground="#909090"
+                                               VerticalAlignment="Center" Margin="8,0,0,0" MinWidth="28" TextAlignment="Right" IsHitTestVisible="False" />
+                                </Grid>
+                            </Border>
+                            <!-- Brightness -->
+                            <Border x:Name="BrightnessRow" Height="23" Margin="0,3,0,0" Cursor="Hand" Background="Transparent"
+                                    MouseLeftButtonDown="BrightnessBar_MouseDown" MouseLeftButtonUp="BrightnessBar_MouseUp"
+                                    MouseMove="BrightnessBar_MouseMove">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="&#xE706;" FontFamily="Segoe Fluent Icons" FontSize="13" Foreground="#707070" VerticalAlignment="Center" Margin="0,0,6,0" IsHitTestVisible="False" />
+                                    <Grid Grid.Column="1" x:Name="BrightnessBarTrack" VerticalAlignment="Center" IsHitTestVisible="False">
+                                        <Border Height="8" Background="#303030" CornerRadius="4" />
+                                        <Border x:Name="BrightnessBarFill" Height="8" Background="#FFC928" CornerRadius="4"
+                                                HorizontalAlignment="Left" Width="0" />
+                                        <Ellipse x:Name="BrightnessThumb" Width="13" Height="13" Fill="#FFC928" Stroke="#22000000" StrokeThickness="1"
+                                                 HorizontalAlignment="Left" VerticalAlignment="Center" Margin="-6.5,0,0,0">
+                                            <Ellipse.Effect>
+                                                <DropShadowEffect BlurRadius="8" ShadowDepth="1" Opacity="0.5" Color="#000000" />
+                                            </Ellipse.Effect>
+                                        </Ellipse>
+                                    </Grid>
+                                    <TextBlock x:Name="BrightnessText" Text="100" Grid.Column="2" FontSize="10" Foreground="#909090"
+                                               VerticalAlignment="Center" Margin="8,0,0,0" MinWidth="28" TextAlignment="Right" IsHitTestVisible="False" />
+                                </Grid>
+                            </Border>
+                        </StackPanel>
                     </StackPanel>
                 </Grid>
             </Border>
@@ -870,19 +893,20 @@
                                 </ItemsControl.ItemsPanel>
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
-                                        <Border x:Name="AltTabStripCard" Width="150" Height="120" CornerRadius="11"
+                                        <Border x:Name="AltTabStripCard" Width="150" Height="114" CornerRadius="11"
                                                 Background="#10FFFFFF" BorderBrush="#10FFFFFF" BorderThickness="1.5"
                                                 Margin="0,0,10,0" Tag="{Binding}">
                                             <Grid>
                                                 <Grid.RowDefinitions>
-                                                    <RowDefinition Height="*" />
+                                                    <RowDefinition Height="87.5" />
                                                     <RowDefinition Height="Auto" />
                                                 </Grid.RowDefinitions>
-                                                <Border x:Name="AltTabStripThumb" Tag="{Binding}" Margin="7"
+                                                <Border x:Name="AltTabStripThumb" Tag="{Binding}" Margin="7,7,7,4"
                                                         Background="#090909" CornerRadius="7" ClipToBounds="True" />
                                                 <TextBlock Grid.Row="1" Text="{Binding Title}" FontSize="9.5"
-                                                           TextTrimming="CharacterEllipsis" MaxWidth="132"
-                                                           Foreground="#C8C8C8" Padding="7,0,7,6" />
+                                                           TextTrimming="CharacterEllipsis" MaxWidth="136" Margin="0,2,0,0"
+                                                           Foreground="#C8C8C8" Padding="7,0,7,0"
+                                                           TextAlignment="Center" HorizontalAlignment="Stretch" />
                                             </Grid>
                                         </Border>
                                     </DataTemplate>
@@ -996,6 +1020,10 @@
                 <Button x:Name="SettingsButton" Style="{StaticResource ShellIconButton}" Width="48" Height="48" Margin="0,0,12,0" Click="Settings_Click"
                         AutomationProperties.Name="Settings">
                     <TextBlock Text="&#xE713;" FontFamily="Segoe MDL2 Assets" FontSize="23" />
+                </Button>
+                <Button x:Name="DesktopModeButton" Style="{StaticResource ShellIconButton}" Width="48" Height="48" Margin="0,0,12,0" Click="DesktopMode_Click"
+                        AutomationProperties.Name="Switch to desktop">
+                    <TextBlock Text="&#xE8AB;" FontFamily="Segoe Fluent Icons" FontSize="24" />
                 </Button>
                 <Button x:Name="PowerButton" Style="{StaticResource ShellIconButton}" Width="48" Height="48" Margin="0,0,12,0" Click="PowerOptions_Click"
                         AutomationProperties.Name="Power options">

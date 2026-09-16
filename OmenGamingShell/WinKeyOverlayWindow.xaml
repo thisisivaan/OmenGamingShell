@@ -3,13 +3,14 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:OmenGamingShell"
         WindowStyle="None"
-        AllowsTransparency="False"
-        Background="#F20A0A0A"
+        AllowsTransparency="True"
+        Background="Transparent"
         Topmost="True"
         ShowInTaskbar="False"
         ResizeMode="NoResize"
         WindowStartupLocation="Manual"
         KeyDown="Overlay_KeyDown"
+        PreviewKeyDown="Overlay_PreviewKeyDown"
         UseLayoutRounding="True">
     <Window.Resources>
         <local:ApplicationIconConverter x:Key="ApplicationIconConverter" />
@@ -40,6 +41,52 @@
                                 <Setter TargetName="FilterSurface" Property="Opacity" Value="0.7" />
                             </Trigger>
                         </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="OverlaySlider" TargetType="Slider">
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Height" Value="24" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Slider">
+                        <Grid Background="Transparent">
+                            <Border Height="5" Background="#26FFFFFF" CornerRadius="2.5" VerticalAlignment="Center" />
+                            <Track x:Name="PART_Track" VerticalAlignment="Center">
+                                <Track.DecreaseRepeatButton>
+                                    <RepeatButton Command="Slider.DecreaseLarge" Focusable="False" Background="Transparent" BorderThickness="0">
+                                        <RepeatButton.Template>
+                                            <ControlTemplate TargetType="RepeatButton">
+                                                <Border Height="5" Background="#FF003C" CornerRadius="2.5" />
+                                            </ControlTemplate>
+                                        </RepeatButton.Template>
+                                    </RepeatButton>
+                                </Track.DecreaseRepeatButton>
+                                <Track.IncreaseRepeatButton>
+                                    <RepeatButton Command="Slider.IncreaseLarge" Focusable="False" Background="Transparent" BorderThickness="0">
+                                        <RepeatButton.Template>
+                                            <ControlTemplate TargetType="RepeatButton">
+                                                <Border Background="Transparent" />
+                                            </ControlTemplate>
+                                        </RepeatButton.Template>
+                                    </RepeatButton>
+                                </Track.IncreaseRepeatButton>
+                                <Track.Thumb>
+                                    <Thumb Focusable="True">
+                                        <Thumb.Template>
+                                            <ControlTemplate TargetType="Thumb">
+                                                <Border Width="13" Height="13" Background="White" CornerRadius="6.5">
+                                                    <Border.Effect>
+                                                        <DropShadowEffect BlurRadius="8" ShadowDepth="1" Opacity="0.55" Color="#000000" />
+                                                    </Border.Effect>
+                                                </Border>
+                                            </ControlTemplate>
+                                        </Thumb.Template>
+                                    </Thumb>
+                                </Track.Thumb>
+                            </Track>
+                        </Grid>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
@@ -76,6 +123,39 @@
                 </Setter.Value>
             </Setter>
         </Style>
+        <Style x:Key="SearchDiamondButton" TargetType="Button">
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Width" Value="40" />
+            <Setter Property="Height" Value="40" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Background" Value="#14FFFFFF" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="DiamondCap" CornerRadius="20" Background="{TemplateBinding Background}">
+                            <Border.Effect>
+                                <DropShadowEffect BlurRadius="14" ShadowDepth="0" Color="#FF003C" Opacity="0" />
+                            </Border.Effect>
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="DiamondCap" Property="Background" Value="#2EFF003C" />
+                                <Setter TargetName="DiamondCap" Property="Effect">
+                                    <Setter.Value>
+                                        <DropShadowEffect BlurRadius="16" ShadowDepth="0" Color="#FF003C" Opacity="0.55" />
+                                    </Setter.Value>
+                                </Setter>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="DiamondCap" Property="Opacity" Value="0.75" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </Window.Resources>
     <Grid x:Name="RootGrid" MouseDown="RootGrid_MouseDown">
         <Grid.Background>
@@ -101,22 +181,25 @@
                 <Border x:Name="SearchBorder" CornerRadius="28" Background="#F20F0F0F"
                         BorderBrush="#14FFFFFF" BorderThickness="1">
                     <Border.Effect>
-                        <DropShadowEffect BlurRadius="26" ShadowDepth="0" Opacity="0.35" Color="#000000" />
+                        <DropShadowEffect BlurRadius="24" ShadowDepth="6" Opacity="0.45" Color="#000000" />
                     </Border.Effect>
                     <Grid>
-                        <Border Width="1.5" Height="26" CornerRadius="1" Background="{StaticResource AccentBrush}"
-                                HorizontalAlignment="Left" VerticalAlignment="Center" Margin="10,0,0,0" />
                         <TextBlock Text="&#xE721;" FontFamily="Segoe Fluent Icons" FontSize="20" Foreground="#B0B0B0"
-                                   VerticalAlignment="Center" Margin="30,0,0,0" />
+                                   VerticalAlignment="Center" Margin="28,0,0,0" IsHitTestVisible="False" />
                         <TextBox x:Name="SearchBox" Background="Transparent" BorderThickness="0"
-                                 FontSize="21" Padding="58,0,24,0" VerticalContentAlignment="Center"
+                                 FontSize="21" Padding="56,0,64,0" VerticalContentAlignment="Center"
                                  Foreground="White" CaretBrush="{StaticResource AccentBrush}"
                                  TextChanged="SearchBox_TextChanged"
                                  GotKeyboardFocus="SearchBox_GotKeyboardFocus"
                                  LostKeyboardFocus="SearchBox_LostKeyboardFocus"
                                  AutomationProperties.Name="Search open windows and apps" />
-                        <TextBlock Text="" x:Name="SearchGlyph" FontFamily="Segoe Fluent Icons" FontSize="16"
-                                   Foreground="#606060" VerticalAlignment="Center" HorizontalAlignment="Right" Margin="0,0,22,0" />
+                        <Button x:Name="SearchButton" Style="{StaticResource SearchDiamondButton}"
+                                HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,8,0"
+                                Click="SearchButton_Click">
+                            <Grid Width="15" Height="15">
+                                <Path Data="M 7.5,0.5 L 14.5,7.5 L 7.5,14.5 L 0.5,7.5 Z" Fill="#FF003C" />
+                            </Grid>
+                        </Button>
                     </Grid>
                 </Border>
             </Grid>
@@ -254,19 +337,44 @@
                                                Foreground="#FFFFFF" TextTrimming="CharacterEllipsis" />
                                     <TextBlock x:Name="MediaArtist" Text="" FontSize="9.5" Foreground="#909090"
                                                TextTrimming="CharacterEllipsis" Margin="0,3,0,0" />
-                                    <Button x:Name="MediaPlayButton" Style="{StaticResource LibraryFilterButton}"
-                                            Content="PLAY" FontSize="9" FontWeight="SemiBold" Height="26" Padding="14,4"
-                                            Margin="0,9,0,0" HorizontalAlignment="Left" Click="MediaPlay_Click" />
+                                    <UniformGrid Columns="3" Rows="1" Margin="0,9,0,0">
+                                        <Button x:Name="MediaPrevButton" Style="{StaticResource LibraryFilterButton}"
+                                                Content="&#xE892;" FontFamily="Segoe Fluent Icons" FontSize="12"
+                                                Height="26" Width="30" Padding="0" Margin="0,0,4,0" Click="MediaPrev_Click" />
+                                        <Button x:Name="MediaPlayButton" Style="{StaticResource LibraryFilterButton}"
+                                                Content="&#xEDB8;" FontFamily="Segoe Fluent Icons" FontSize="13"
+                                                Height="26" Width="36" Padding="0" Margin="0,0,4,0" Click="MediaPlay_Click" />
+                                        <Button x:Name="MediaNextButton" Style="{StaticResource LibraryFilterButton}"
+                                                Content="&#xE893;" FontFamily="Segoe Fluent Icons" FontSize="12"
+                                                Height="26" Width="30" Padding="0" Click="MediaNext_Click" />
+                                    </UniformGrid>
+                                    <Grid Margin="0,4,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <Button x:Name="MediaMuteButton" Style="{StaticResource LibraryFilterButton}"
+                                                Content="&#xE767;" FontFamily="Segoe Fluent Icons" FontSize="11"
+                                                Height="24" Width="32" Padding="0" Margin="0,0,6,0"
+                                                Click="MediaMute_Click" />
+                                        <Slider x:Name="VolumeSlider" Grid.Column="1" Minimum="0" Maximum="100"
+                                                Style="{StaticResource OverlaySlider}"
+                                                VerticalAlignment="Center" ValueChanged="VolumeSlider_ValueChanged" />
+                                        <TextBlock x:Name="VolumeValueText" Grid.Column="2" FontSize="9.5"
+                                                   Foreground="#909090" TextAlignment="Right" VerticalAlignment="Center"
+                                                   MinWidth="26" Margin="6,0,0,0" />
+                                    </Grid>
                                 </StackPanel>
                             </Grid>
                         </Border>
-                        <!-- Continue playing -->
+                        <!-- Game Store -->
                         <Border Grid.Column="2" CornerRadius="13" Padding="12"
-                                MouseLeftButtonUp="ContinueClick" Cursor="Hand">
+                                MouseLeftButtonUp="StoreClick" Cursor="Hand">
                             <Border.Background>
                                 <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
-                                    <GradientStop Color="#1CFFFFFF" Offset="0" />
-                                    <GradientStop Color="#09FFFFFF" Offset="1" />
+                                    <GradientStop Color="#402B1A4A" Offset="0" />
+                                    <GradientStop Color="#12090A1E" Offset="1" />
                                 </LinearGradientBrush>
                             </Border.Background>
                             <Grid>
@@ -274,18 +382,25 @@
                                     <ColumnDefinition Width="Auto" />
                                     <ColumnDefinition Width="*" />
                                 </Grid.ColumnDefinitions>
-                                <Border Width="1.5" Height="30" CornerRadius="1" Background="#3C9DFF"
+                                <Border Width="1.5" Height="30" CornerRadius="1" Background="#9B6BFF"
                                         HorizontalAlignment="Left" VerticalAlignment="Center" />
-                                <Border x:Name="ContinueArt" Width="54" Height="54" CornerRadius="12"
-                                        Background="#10FFFFFF" BorderBrush="#26FFFFFF" BorderThickness="1"
+                                <Border x:Name="StoreArt" Width="54" Height="54" CornerRadius="12"
+                                        Background="#10FFFFFF" BorderBrush="#33FFFFFF" BorderThickness="1"
                                         ClipToBounds="True" VerticalAlignment="Center" Margin="9,0,0,0">
-                                    <Border x:Name="ContinueArtInner" CornerRadius="11" />
+                                    <Border x:Name="StoreArtInner" CornerRadius="11" />
                                 </Border>
                                 <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="14,0,0,0">
-                                    <TextBlock Text="CONTINUE PLAYING" FontSize="9" FontWeight="SemiBold" Foreground="#7FA8E0" />
-                                    <TextBlock x:Name="ContinueName" Text="Nothing to resume" FontSize="13" FontWeight="SemiBold"
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="GAME STORE" FontSize="9" FontWeight="SemiBold" Foreground="#B59BFF" />
+                                        <Border Background="#2E9B6BFF" CornerRadius="8" Padding="6,1" Margin="6,0,0,0">
+                                            <TextBlock Text="FEATURED" FontSize="7.5" FontWeight="Bold" Foreground="#D4C6FF" />
+                                        </Border>
+                                    </StackPanel>
+                                    <TextBlock x:Name="StoreGameName" Text="Nothing featured" FontSize="13" FontWeight="SemiBold"
                                                Foreground="#FFFFFF" TextTrimming="CharacterEllipsis" Margin="0,4,0,0" />
-                                    <TextBlock Text="Resume game  >" FontSize="9" Foreground="#3C9DFF" Margin="0,4,0,0" />
+                                    <TextBlock x:Name="StoreGameDev" Text="" FontSize="9" Foreground="#909090"
+                                               TextTrimming="CharacterEllipsis" Margin="0,2,0,0" />
+                                    <TextBlock Text="Launch deal  >" FontSize="9" Foreground="#B59BFF" Margin="0,4,0,0" />
                                 </StackPanel>
                             </Grid>
                         </Border>

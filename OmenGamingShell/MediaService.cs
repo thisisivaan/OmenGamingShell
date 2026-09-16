@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using Windows.Media.Control;
 using Windows.Storage.Streams;
 
@@ -108,5 +109,49 @@ public static class MediaService
             if (session is not null) await session.TrySkipPreviousAsync();
         }
         catch { }
+    }
+
+    public static void VolumeDown() => SendMediaKey(0xAE);
+
+    public static void VolumeUp() => SendMediaKey(0xAF);
+
+    public static void MuteVolume() => SendMediaKey(0xAD);
+
+    private static void SendMediaKey(ushort vk)
+    {
+        try
+        {
+            var down = new INPUT { Type = 1, Data = new INPUTUNION { Vk = new KEYBDINPUT { Vk = vk, Scan = 0, Flags = 0, Time = 0, ExtraInfo = IntPtr.Zero } } };
+            var up = new INPUT { Type = 1, Data = new INPUTUNION { Vk = new KEYBDINPUT { Vk = vk, Scan = 0, Flags = 2, Time = 0, ExtraInfo = IntPtr.Zero } } };
+            var inputs = new[] { down, up };
+            SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+        }
+        catch { }
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct INPUT
+    {
+        public uint Type;
+        public INPUTUNION Data;
+    }
+
+    [StructLayout(LayoutKind.Explicit)]
+    private struct INPUTUNION
+    {
+        [FieldOffset(0)] public KEYBDINPUT Vk;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct KEYBDINPUT
+    {
+        public ushort Vk;
+        public ushort Scan;
+        public uint Flags;
+        public uint Time;
+        public IntPtr ExtraInfo;
     }
 }
