@@ -115,7 +115,11 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Border x:Name="FilterSurface" Background="{TemplateBinding Background}" CornerRadius="22">
+                        <Border x:Name="FilterSurface" Background="{TemplateBinding Background}" CornerRadius="22"
+                                RenderTransformOrigin="0.5,0.5">
+                            <Border.RenderTransform>
+                                <ScaleTransform x:Name="BtnScale" ScaleX="1" ScaleY="1" />
+                            </Border.RenderTransform>
                             <Border.Effect><DropShadowEffect BlurRadius="16" ShadowDepth="0" Color="White" Opacity="0.07" /></Border.Effect>
                             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
                         </Border>
@@ -128,9 +132,22 @@
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
                                 <Setter TargetName="FilterSurface" Property="Opacity" Value="0.7" />
-                            </Trigger>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="FilterSurface" Property="Background" Value="{StaticResource AccentBrush}" />
+                                <Trigger.EnterActions>
+                                    <BeginStoryboard>
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="BtnScale" Storyboard.TargetProperty="ScaleX" To="0.9" Duration="0:0:0.05" />
+                                            <DoubleAnimation Storyboard.TargetName="BtnScale" Storyboard.TargetProperty="ScaleY" To="0.9" Duration="0:0:0.05" />
+                                        </Storyboard>
+                                    </BeginStoryboard>
+                                </Trigger.EnterActions>
+                                <Trigger.ExitActions>
+                                    <BeginStoryboard>
+                                        <Storyboard>
+                                            <DoubleAnimation Storyboard.TargetName="BtnScale" Storyboard.TargetProperty="ScaleX" To="1.0" Duration="0:0:0.12" />
+                                            <DoubleAnimation Storyboard.TargetName="BtnScale" Storyboard.TargetProperty="ScaleY" To="1.0" Duration="0:0:0.12" />
+                                        </Storyboard>
+                                    </BeginStoryboard>
+                                </Trigger.ExitActions>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -222,7 +239,6 @@
                     <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="CardSurface" Property="Background" Value="{StaticResource AccentBrush}"/></Trigger>
                     <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="CardSurface" Property="Background" Value="#291219"/></Trigger>
                     <Trigger Property="IsPressed" Value="True"><Setter TargetName="CardSurface" Property="Opacity" Value="0.72"/></Trigger>
-                    <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="CardSurface" Property="Background" Value="{StaticResource AccentBrush}"/></Trigger>
                 </ControlTemplate.Triggers>
             </ControlTemplate></Setter.Value></Setter>
         </Style>
@@ -346,45 +362,77 @@
                     Margin="0,8,1132,0" Height="184" Focusable="True"
                     CornerRadius="14"
                     Visibility="Collapsed" ClipToBounds="True"
+                    SizeChanged="ContinueHost_SizeChanged"
                     KeyDown="ContinueHost_KeyDown"
-                    IsKeyboardFocusWithinChanged="ContinueHost_FocusWithinChanged">
+                    IsKeyboardFocusWithinChanged="ContinueHost_FocusWithinChanged"
+                    MouseLeftButtonUp="ContinueGame_Click" Cursor="Hand">
                 <Border.Background>
-                    <ImageBrush x:Name="ContinueCoverBrush" Stretch="UniformToFill" />
+                    <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                        <GradientStop Color="#26FFFFFF" Offset="0" />
+                        <GradientStop Color="#10FFFFFF" Offset="1" />
+                    </LinearGradientBrush>
                 </Border.Background>
                 <Border.Style>
                     <Style TargetType="Border">
-                        <Setter Property="BorderBrush" Value="Transparent" />
-                        <Setter Property="BorderThickness" Value="0" />
+                        <Setter Property="BorderBrush" Value="#12FFFFFF" />
+                        <Setter Property="BorderThickness" Value="1" />
                         <Style.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter Property="Opacity" Value="0.85" />
                             </Trigger>
+                            <Trigger Property="IsFocused" Value="True">
+                                <Setter Property="BorderBrush" Value="#669B6BFF" />
+                                <Setter Property="BorderThickness" Value="1.5" />
+                            </Trigger>
                         </Style.Triggers>
                     </Style>
                 </Border.Style>
-                <Border CornerRadius="14" ClipToBounds="True">
                 <Grid>
-                    <Border VerticalAlignment="Bottom" Padding="12,10"
-                            CornerRadius="0,0,14,14">
-                        <Border.Background>
-                            <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
-                                <GradientStop Color="#00000000" Offset="0"/>
-                                <GradientStop Color="#EE000000" Offset="1"/>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <Border x:Name="ContinueStoreTile1" Grid.Row="0" Grid.Column="0" />
+                    <Border x:Name="ContinueStoreTile2" Grid.Row="0" Grid.Column="1" />
+                    <Border x:Name="ContinueStoreTile3" Grid.Row="0" Grid.Column="2" />
+                    <Border x:Name="ContinueStoreTile4" Grid.Row="1" Grid.Column="0" />
+                    <Border x:Name="ContinueStoreTile5" Grid.Row="1" Grid.Column="1" />
+                    <Border x:Name="ContinueStoreTile6" Grid.Row="1" Grid.Column="2" />
+                    <Rectangle Grid.RowSpan="2" Grid.ColumnSpan="3">
+                        <Rectangle.Fill>
+                            <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                                <GradientStop Color="#E6260B29" Offset="0" />
+                                <GradientStop Color="#EE0B0B0B" Offset="0.55" />
+                                <GradientStop Color="#F2050505" Offset="1" />
                             </LinearGradientBrush>
-                        </Border.Background>
-                        <StackPanel x:Name="ContinueContent">
-                            <TextBlock x:Name="ContinueGameName" FontSize="13" FontWeight="SemiBold"
-                                       TextTrimming="CharacterEllipsis" MaxWidth="900" TextWrapping="NoWrap"
-                                       Foreground="White" />
-                            <TextBlock Text="Continue where you left off..." Foreground="#AAAAAA" FontSize="9"
-                                       Margin="0,3,0,0" />
+                        </Rectangle.Fill>
+                    </Rectangle>
+                    <Border Width="3" Height="30" CornerRadius="1.5" Background="#9B6BFF"
+                            HorizontalAlignment="Left" VerticalAlignment="Center" Margin="12,0,0,0"
+                            Grid.RowSpan="2" Grid.ColumnSpan="3" />
+                    <StackPanel Grid.RowSpan="2" Grid.ColumnSpan="3" VerticalAlignment="Center" Margin="24,0,0,0">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#xE7F3;" FontFamily="Segoe Fluent Icons" FontSize="14"
+                                       Foreground="#B59BFF" VerticalAlignment="Center" />
+                            <TextBlock Text="GAME STORE" FontSize="13" FontWeight="Bold" Foreground="White"
+                                       Margin="8,0,0,0" />
                         </StackPanel>
-                    </Border>
+                        <TextBlock x:Name="ContinueGameName" Text="Browse &amp; download your favourite games"
+                                   FontSize="9.5" Foreground="#D4C6FF" Margin="0,5,0,0"
+                                   TextTrimming="CharacterEllipsis" TextWrapping="Wrap" />
+                        <TextBlock Text="Open store  >" FontSize="10" FontWeight="SemiBold" Foreground="#9B6BFF"
+                                   Margin="0,9,0,0" />
+                    </StackPanel>
                     <TextBlock x:Name="ContinueWelcomeText" Visibility="Collapsed"
                                FontSize="16" FontWeight="SemiBold" Foreground="White"
-                               Text="Welcome to OMEN Shell" VerticalAlignment="Bottom" Padding="12,10" />
+                               Text="Welcome to OMEN Shell" HorizontalAlignment="Center" VerticalAlignment="Center"
+                               Margin="24" Grid.RowSpan="2" Grid.ColumnSpan="3" />
                 </Grid>
-                </Border>
             </Border>
             <Border x:Name="MediaControlsBar" HorizontalAlignment="Right" VerticalAlignment="Top"
                     Margin="0,8,738,0" Width="380" Height="184" Padding="10"
@@ -602,8 +650,6 @@
                                             <Grid>
                                                 <TextBlock Text="&#xE7FC;" FontFamily="Segoe Fluent Icons" FontSize="16"
                                                            Foreground="#E0E0E0" HorizontalAlignment="Center" VerticalAlignment="Center" />
-                                                <Ellipse x:Name="ControllerIndicatorDot" Width="8" Height="8" Fill="#FF003C"
-                                                         HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,-1,-1,0" />
                                             </Grid>
                                         </Border>
                                         <TextBlock Text="CONTROLLER" Foreground="#A8A8A8" FontSize="8"
@@ -628,11 +674,9 @@
                                             <Grid>
                                                 <TextBlock Text="&#xE7F5;" FontFamily="Segoe Fluent Icons" FontSize="16"
                                                            Foreground="#E0E0E0" HorizontalAlignment="Center" VerticalAlignment="Center" />
-                                                <Ellipse x:Name="EarphoneIndicatorDot" Width="8" Height="8" Fill="#FF003C"
-                                                         HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,-1,-1,0" />
                                             </Grid>
                                         </Border>
-                                        <TextBlock Text="EARPHONE" Foreground="#A8A8A8" FontSize="8"
+                                        <TextBlock Text="AUDIO DEVICE" Foreground="#A8A8A8" FontSize="8"
                                                    HorizontalAlignment="Center" Margin="0,3,0,0" />
                                         <TextBlock x:Name="EarphoneStatusText" Text="Disconnected" Foreground="#606060" FontSize="8"
                                                    HorizontalAlignment="Center" Margin="0,1,0,0" />
@@ -817,7 +861,8 @@
 
         <Border x:Name="NotificationToast" Grid.RowSpan="3" HorizontalAlignment="Center" VerticalAlignment="Top"
                 Margin="0,62,0,0" CornerRadius="18" Padding="22,12"
-                MaxWidth="640" Visibility="Collapsed" IsHitTestVisible="False">
+                MaxWidth="640" Visibility="Collapsed" IsHitTestVisible="True"
+                Cursor="Hand" MouseLeftButtonDown="NotificationToast_Click">
             <Border.Background>
                 <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
                     <GradientStop Color="#F2420C0C" Offset="0" />
@@ -1017,19 +1062,22 @@
                                  Background="Transparent" BorderThickness="0" Visibility="Collapsed"
                                  IsHitTestVisible="False" />
                 </Grid>
+                <Button x:Name="DownloadCenterButton" Style="{StaticResource ShellIconButton}" Width="48" Height="48" Margin="0,0,12,0"
+                        Click="DownloadCenter_Click" AutomationProperties.Name="Download center">
+                    <Grid>
+                        <TextBlock Text="&#xE896;" FontFamily="Segoe MDL2 Assets" FontSize="23" />
+                        <Border x:Name="DownloadCountBadge" Background="{StaticResource AccentBrush}" CornerRadius="8"
+                                MinWidth="16" Height="16" HorizontalAlignment="Right" VerticalAlignment="Top"
+                                Margin="0,-3,-5,0" Visibility="Collapsed">
+                            <TextBlock x:Name="DownloadCountText" FontSize="9" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                    </Grid>
+                </Button>
                 <Button x:Name="SettingsButton" Style="{StaticResource ShellIconButton}" Width="48" Height="48" Margin="0,0,12,0" Click="Settings_Click"
                         AutomationProperties.Name="Settings">
                     <TextBlock Text="&#xE713;" FontFamily="Segoe MDL2 Assets" FontSize="23" />
                 </Button>
-                <Button x:Name="DesktopModeButton" Style="{StaticResource ShellIconButton}" Width="48" Height="48" Margin="0,0,12,0" Click="DesktopMode_Click"
-                        AutomationProperties.Name="Switch to desktop">
-                    <TextBlock Text="&#xE8AB;" FontFamily="Segoe Fluent Icons" FontSize="24" />
-                </Button>
-                <Button x:Name="PowerButton" Style="{StaticResource ShellIconButton}" Width="48" Height="48" Margin="0,0,12,0" Click="PowerOptions_Click"
-                        AutomationProperties.Name="Power options">
-                    <TextBlock Text="&#xE7E8;" FontFamily="Segoe MDL2 Assets" FontSize="24" />
-                </Button>
-                <Button x:Name="ErrorLogButton" Style="{StaticResource ShellIconButton}" Width="48" Height="48"
+                <Button x:Name="ErrorLogButton" Style="{StaticResource ShellIconButton}" Width="48" Height="48" Margin="0,0,12,0"
                         Click="ErrorLog_Click" AutomationProperties.Name="Error log">
                     <Grid>
                         <TextBlock Text="&#xEA39;" FontFamily="Segoe MDL2 Assets" FontSize="23" />
@@ -1040,11 +1088,19 @@
                         </Border>
                     </Grid>
                 </Button>
+                <Button x:Name="DesktopModeButton" Style="{StaticResource ShellIconButton}" Width="48" Height="48" Margin="0,0,12,0" Click="DesktopMode_Click"
+                        AutomationProperties.Name="Switch to desktop">
+                    <TextBlock Text="&#xE8AB;" FontFamily="Segoe Fluent Icons" FontSize="24" />
+                </Button>
+                <Button x:Name="PowerButton" Style="{StaticResource ShellIconButton}" Width="48" Height="48" Click="PowerOptions_Click"
+                        AutomationProperties.Name="Power options">
+                    <TextBlock Text="&#xE7E8;" FontFamily="Segoe MDL2 Assets" FontSize="24" />
+                </Button>
             </StackPanel>
         </Grid>
 
         <Grid x:Name="GameDetailsPage" Grid.RowSpan="3" Margin="-52,-34" Background="#050505"
-              Visibility="Collapsed">
+              Visibility="Collapsed" Panel.ZIndex="50">
             <Image Source="{Binding Background}" Stretch="UniformToFill"
                    RenderOptions.BitmapScalingMode="HighQuality" />
             <Rectangle>
@@ -1197,6 +1253,360 @@
                         <Button Grid.Column="2" Content="LOG ERROR" Height="44"
                                 FontSize="12" Click="LogError_Click" />
                     </Grid>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <Grid x:Name="GameStorePage" Grid.RowSpan="3" Margin="-52,-34" Background="#C8000000"
+              Visibility="Collapsed" MouseDown="GameStorePage_MouseDown">
+            <Border Background="#0D0D0D" CornerRadius="14" Padding="0"
+                    HorizontalAlignment="Center" VerticalAlignment="Center"
+                    Width="520" MaxHeight="560" MouseDown="GameStorePanel_MouseDown">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <!-- Top row: back button + title -->
+                    <Grid Grid.Row="0" Margin="24,20,24,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Button x:Name="StoreBackButton" Style="{StaticResource BackActionButton}" Content="B"
+                                Width="38" Height="38"
+                                HorizontalAlignment="Left" Click="StoreBack_Click" AutomationProperties.Name="Back" />
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Center">
+                            <TextBlock Text="GAME STORE" FontFamily="Segoe UI Variable Display" FontSize="20" FontWeight="SemiBold"
+                                       Foreground="White" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Grid>
+
+                    <!-- Search field -->
+                    <Border Grid.Row="1" Margin="24,20,24,0" CornerRadius="22" Background="#18FFFFFF">
+                        <Border.Effect>
+                            <DropShadowEffect BlurRadius="16" ShadowDepth="0" Color="White" Opacity="0.07" />
+                        </Border.Effect>
+                        <Grid Margin="16,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="&#xE721;" FontFamily="Segoe Fluent Icons" FontSize="13" Foreground="#808080"
+                                       VerticalAlignment="Center" />
+                            <TextBox x:Name="StoreSearchBox" Grid.Column="1" Background="Transparent" BorderThickness="0"
+                                     FontSize="13" Foreground="White" VerticalContentAlignment="Center"
+                                     Margin="28,0,8,0" TextChanged="StoreSearchBox_TextChanged"
+                                     AutomationProperties.Name="Search game store" />
+                            <TextBlock x:Name="StoreSearchSpinner" Grid.Column="2" Text="&#x27F3;" FontFamily="Segoe Fluent Icons"
+                                       FontSize="14" Foreground="#808080" VerticalAlignment="Center" Visibility="Collapsed"
+                                       RenderTransformOrigin="0.5,0.5">
+                                <TextBlock.RenderTransform>
+                                    <RotateTransform x:Name="StoreSearchSpinTransform" Angle="0" />
+                                </TextBlock.RenderTransform>
+                                <TextBlock.Triggers>
+                                    <EventTrigger RoutedEvent="TextBlock.Loaded">
+                                        <BeginStoryboard>
+                                            <Storyboard RepeatBehavior="Forever">
+                                                <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(RotateTransform.Angle)"
+                                                                 From="0" To="360" Duration="0:0:1" />
+                                            </Storyboard>
+                                        </BeginStoryboard>
+                                    </EventTrigger>
+                                </TextBlock.Triggers>
+                            </TextBlock>
+                        </Grid>
+                    </Border>
+
+                    <!-- Search results -->
+                    <Grid Grid.Row="2" Margin="24,16,24,24">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <ItemsControl x:Name="StoreGamesGrid" Focusable="False">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <StackPanel />
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border x:Name="RowBorder" Background="#121212" CornerRadius="10" Padding="14,12" Margin="0,0,0,8"
+                                                Cursor="Hand" Tag="{Binding}" RenderTransformOrigin="0.5,0.5"
+                                                MouseLeftButtonDown="StoreResultRow_Click">
+                                            <Border.RenderTransform>
+                                                <ScaleTransform x:Name="RowScale" ScaleX="1" ScaleY="1" />
+                                            </Border.RenderTransform>
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <Border Width="50" Height="68" CornerRadius="6" ClipToBounds="True" Margin="0,0,12,0"
+                                                        VerticalAlignment="Center" Background="#1AFFFFFF">
+                                                    <Image Source="{Binding CoverUrl}" Stretch="UniformToFill"
+                                                           RenderOptions.BitmapScalingMode="HighQuality" />
+                                                </Border>
+                                                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                                    <TextBlock Text="{Binding Name}" FontSize="13" FontWeight="SemiBold" Foreground="White"
+                                                               TextTrimming="CharacterEllipsis" />
+                                                    <TextBlock Text="{Binding Developer, TargetNullValue=Unknown developer}"
+                                                               FontSize="10" Foreground="#808080" TextTrimming="CharacterEllipsis"
+                                                               Margin="0,2,0,0" />
+                                                    <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                                        <TextBlock Text="{Binding Genres}" FontSize="9" Foreground="#606060"
+                                                                   TextTrimming="CharacterEllipsis" MaxWidth="280" />
+                                                        <TextBlock Text="{Binding Rating}" FontSize="9" Foreground="#9B6BFF"
+                                                                   Margin="8,0,0,0" />
+                                                    </StackPanel>
+                                                </StackPanel>
+                                                <!-- Action circle - always visible -->
+                                                <Border x:Name="ActionCircle" Grid.Column="2" Width="36" Height="36"
+                                                        CornerRadius="18" VerticalAlignment="Center" Margin="8,0,0,0"
+                                                        Cursor="Hand" MouseLeftButtonDown="StoreResultAction_Click"
+                                                        Tag="{Binding}" Background="#18FF003C">
+                                                    <Border.Style>
+                                                        <Style TargetType="Border">
+                                                            <Setter Property="Background" Value="#18FF003C" />
+                                                            <Style.Triggers>
+                                                                <Trigger Property="IsMouseOver" Value="True">
+                                                                    <Setter Property="Background" Value="#44FF003C" />
+                                                                </Trigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </Border.Style>
+                                                    <Grid>
+                                                        <TextBlock x:Name="ActionIcon" Text="&#xE896;" FontFamily="Segoe Fluent Icons"
+                                                                   FontSize="15" Foreground="#FF003C"
+                                                                   HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                                        <TextBlock x:Name="DownloadSpinIcon" Text="&#xE895;" FontFamily="Segoe Fluent Icons"
+                                                                   FontSize="15" Foreground="#E8B83C" Visibility="Collapsed"
+                                                                   HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                                   RenderTransformOrigin="0.5,0.5">
+                                                            <TextBlock.RenderTransform>
+                                                                <RotateTransform Angle="0" />
+                                                            </TextBlock.RenderTransform>
+                                                            <TextBlock.Triggers>
+                                                                <EventTrigger RoutedEvent="TextBlock.Loaded">
+                                                                    <BeginStoryboard>
+                                                                        <Storyboard RepeatBehavior="Forever">
+                                                                            <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(RotateTransform.Angle)"
+                                                                                             From="0" To="360" Duration="0:0:1" />
+                                                                        </Storyboard>
+                                                                    </BeginStoryboard>
+                                                                </EventTrigger>
+                                                            </TextBlock.Triggers>
+                                                        </TextBlock>
+                                                    </Grid>
+                                                </Border>
+                                            </Grid>
+                                        </Border>
+                                        <DataTemplate.Triggers>
+                                            <!-- Downloading: yellow spin -->
+                                            <DataTrigger Binding="{Binding IsDownloading}" Value="True">
+                                                <Setter TargetName="ActionIcon" Property="Visibility" Value="Collapsed" />
+                                                <Setter TargetName="DownloadSpinIcon" Property="Visibility" Value="Visible" />
+                                                <Setter TargetName="ActionCircle" Property="Background" Value="#22E8B83C" />
+                                                <Setter TargetName="RowBorder" Property="Background" Value="#10E8B83C" />
+                                            </DataTrigger>
+                                            <!-- Installed: green row + check -->
+                                            <DataTrigger Binding="{Binding IsInstalled}" Value="True">
+                                                <Setter TargetName="RowBorder" Property="Background" Value="#1224C486" />
+                                                <Setter TargetName="ActionIcon" Property="Text" Value="&#xE73E;" />
+                                                <Setter TargetName="ActionIcon" Property="Foreground" Value="#24C486" />
+                                                <Setter TargetName="ActionCircle" Property="Background" Value="#1824C486" />
+                                            </DataTrigger>
+                                        </DataTemplate.Triggers>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </ScrollViewer>
+                        <TextBlock x:Name="StoreEmptyText" Text="Search for games on IGDB"
+                                   FontSize="13" Foreground="#505050" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    </Grid>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- Download Center overlay -->
+        <Grid x:Name="DownloadCenterPage" Grid.RowSpan="3" Margin="-52,-34" Background="#C8000000"
+              Visibility="Collapsed"
+              KeyboardNavigation.TabNavigation="Cycle" KeyboardNavigation.DirectionalNavigation="Cycle"
+              MouseDown="DownloadCenterPage_MouseDown">
+            <Border Background="#0D0D0D" CornerRadius="14" Padding="0"
+                    HorizontalAlignment="Center" VerticalAlignment="Center"
+                    Width="520" MaxHeight="560" MouseDown="DownloadCenterPanel_MouseDown">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <!-- Top row: back button + title -->
+                    <Grid Grid.Row="0" Margin="24,20,24,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Button x:Name="DownloadCenterBackButton" Style="{StaticResource BackActionButton}" Content="B"
+                                Width="38" Height="38"
+                                HorizontalAlignment="Left" Click="DownloadCenterBack_Click" AutomationProperties.Name="Back" />
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Center">
+                            <TextBlock Text="DOWNLOADS" FontFamily="Segoe UI Variable Display" FontSize="20" FontWeight="SemiBold"
+                                       Foreground="White" VerticalAlignment="Center" />
+                        </StackPanel>
+                        <Button Grid.Column="2" Style="{StaticResource ShellIconButton}" Width="38" Height="38"
+                                Click="DownloadCenterSettings_Click" AutomationProperties.Name="Download settings" ToolTip="Download settings">
+                            <TextBlock Text="&#xE713;" FontFamily="Segoe Fluent Icons" FontSize="16" Foreground="#909090" />
+                        </Button>
+                    </Grid>
+
+                    <!-- Download list -->
+                    <Grid Grid.Row="1" Margin="24,20,24,24">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="*" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto">
+                            <ItemsControl x:Name="DownloadCenterGrid" Focusable="False">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <StackPanel />
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Background="#121212" CornerRadius="10" Padding="14,12" Margin="0,0,0,8">
+                                            <Grid>
+                                                <Grid.RowDefinitions>
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="Auto" />
+                                                </Grid.RowDefinitions>
+                                                <Grid Grid.Row="0">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="50" />
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <Border Grid.Column="0" Width="50" Height="68" CornerRadius="6" ClipToBounds="True"
+                                                            Background="#1AFFFFFF" VerticalAlignment="Top">
+                                                        <Image Source="{Binding CoverUrl}" Stretch="UniformToFill" />
+                                                    </Border>
+                                                    <StackPanel Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Center">
+                                                        <TextBlock Text="{Binding Name}" FontSize="13" FontWeight="SemiBold" Foreground="White"
+                                                                   TextTrimming="CharacterEllipsis" />
+                                                        <TextBlock Text="{Binding StatusText}" FontSize="10" Foreground="#909090"
+                                                                   Margin="0,4,0,0" />
+                                                        <TextBlock Text="{Binding SizeText}" FontSize="9" Foreground="#606060"
+                                                                   Margin="0,2,0,0" />
+                                                    </StackPanel>
+                                                    <TextBlock Grid.Column="2" Text="{Binding StatusIcon}" FontFamily="Segoe Fluent Icons"
+                                                               FontSize="18" VerticalAlignment="Center" Foreground="{Binding StatusColor}" />
+                                                </Grid>
+                                                <Grid Grid.Row="1" Margin="0,8,0,0">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <Grid Height="4" Grid.Column="0">
+                                                        <Border Background="#20FFFFFF" CornerRadius="2" />
+                                                        <Border CornerRadius="2" Background="#FF003C"
+                                                                HorizontalAlignment="Left" Width="{Binding ProgressWidth}" />
+                                                    </Grid>
+                                                    <TextBlock Grid.Column="1" Text="{Binding ProgressText}" FontSize="9"
+                                                               Foreground="#707070" VerticalAlignment="Center" Margin="8,0,0,0" />
+                                                </Grid>
+                                                <Grid Grid.Row="2" Margin="0,8,0,0" HorizontalAlignment="Right">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="Auto" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <Button Grid.Column="0" Style="{StaticResource LibraryFilterButton}" Width="28" Height="26"
+                                                            Padding="0" Margin="0,0,4,0" Tag="{Binding}"
+                                                            Click="DownloadPause_Click" Visibility="{Binding CanPause, Converter={StaticResource BoolToVisConverter}}">
+                                                        <TextBlock Text="&#xE769;" FontFamily="Segoe Fluent Icons" FontSize="11" />
+                                                    </Button>
+                                                    <Button Grid.Column="1" Style="{StaticResource LibraryFilterButton}" Width="28" Height="26"
+                                                            Padding="0" Margin="0,0,4,0" Tag="{Binding}"
+                                                            Click="DownloadResume_Click" Visibility="{Binding CanResume, Converter={StaticResource BoolToVisConverter}}">
+                                                        <TextBlock Text="&#xE768;" FontFamily="Segoe Fluent Icons" FontSize="11" />
+                                                    </Button>
+                                                    <Button Grid.Column="2" Style="{StaticResource LibraryFilterButton}" Width="28" Height="26"
+                                                            Padding="0" Tag="{Binding}"
+                                                            Click="DownloadCancel_Click" Visibility="{Binding CanCancel, Converter={StaticResource BoolToVisConverter}}">
+                                                        <TextBlock Text="&#xE711;" FontFamily="Segoe Fluent Icons" FontSize="11" />
+                                                    </Button>
+                                                    <Button Grid.Column="3" Style="{StaticResource LibraryFilterButton}" Width="28" Height="26"
+                                                            Padding="0" Tag="{Binding}" ToolTip="Open download folder"
+                                                            Click="OpenDownloadFolder_Click" Visibility="{Binding CanOpenFolder, Converter={StaticResource BoolToVisConverter}}">
+                                                        <TextBlock Text="&#xE838;" FontFamily="Segoe Fluent Icons" FontSize="11" />
+                                                    </Button>
+                                                </Grid>
+                                            </Grid>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </ScrollViewer>
+                        <TextBlock x:Name="DownloadCenterEmptyText" Text="No active downloads"
+                                   FontSize="13" Foreground="#505050" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    </Grid>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- Download Settings Overlay -->
+        <Grid x:Name="DownloadSettingsOverlay" Grid.RowSpan="3" Margin="-52,-34" Background="#C8000000"
+              Visibility="Collapsed"
+              KeyboardNavigation.TabNavigation="Cycle" KeyboardNavigation.DirectionalNavigation="Cycle"
+              MouseDown="DownloadSettingsOverlay_MouseDown">
+            <Border Background="#0D0D0D" CornerRadius="14" Padding="0"
+                    HorizontalAlignment="Center" VerticalAlignment="Center"
+                    Width="420" MouseDown="DownloadSettingsPanel_MouseDown">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <Grid Grid.Row="0" Margin="24,20,24,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Button x:Name="DownloadSettingsBackButton" Style="{StaticResource BackActionButton}" Content="B"
+                                Width="34" Height="34"
+                                HorizontalAlignment="Left" Click="DownloadSettingsBack_Click" AutomationProperties.Name="Back" />
+                        <TextBlock Grid.Column="1" Text="DOWNLOAD SETTINGS" FontFamily="Segoe UI Variable Display"
+                                   FontSize="16" FontWeight="SemiBold" Foreground="White" VerticalAlignment="Center"
+                                   HorizontalAlignment="Center" />
+                    </Grid>
+
+                    <StackPanel Grid.Row="1" Margin="24,20,24,24">
+                        <TextBlock Text="Download Location" FontSize="11" Foreground="#808080" Margin="0,0,0,8" />
+                        <Grid Margin="0,0,0,16">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <Border Grid.Column="0" Background="#1AFFFFFF" CornerRadius="8" Padding="12,10">
+                                <TextBlock x:Name="DownloadPathText" Text="..." FontSize="11" Foreground="#C0C0C0"
+                                           TextTrimming="CharacterEllipsis" />
+                            </Border>
+                            <Button Grid.Column="1" Style="{StaticResource LibraryFilterButton}" Width="36" Height="34"
+                                    Margin="8,0,0,0" Click="ChangeDownloadPath_Click" ToolTip="Browse...">
+                                <TextBlock Text="&#xE838;" FontFamily="Segoe Fluent Icons" FontSize="13" />
+                            </Button>
+                        </Grid>
+
+                    </StackPanel>
+
                 </Grid>
             </Border>
         </Grid>
@@ -1626,18 +2036,6 @@
     </Grid>
   </Border>
 </Grid>
-
-<!-- Performance Details Overlay -->
-<Grid x:Name="PerfDetailsOverlay" Grid.RowSpan="3" Margin="-52,-34" Background="#E9000000" Visibility="Collapsed" MouseDown="DismissibleOverlay_MouseDown">
-  <Border Width="360" Background="#0D0D0D" CornerRadius="14" Padding="28" HorizontalAlignment="Center" VerticalAlignment="Center" MouseDown="OverlayContent_MouseDown">
-    <StackPanel><Grid Margin="0,0,0,20"><TextBlock Text="SYSTEM PERFORMANCE" FontSize="14" FontWeight="SemiBold" Foreground="#A0A0A0" VerticalAlignment="Center"/>
-    <Button x:Name="PerfBackButton" Style="{StaticResource BackActionButton}" Content="B" Width="32" Height="32" HorizontalAlignment="Left" Click="ClosePerfOverlay"/></Grid>
-    <StackPanel Margin="0,0,0,16"><Grid Margin="0,0,0,4"><TextBlock Text="CPU" FontSize="12" Foreground="#A0A0A0"/><TextBlock x:Name="PerfCpuText" Text="--%" FontSize="12" FontWeight="SemiBold" Foreground="White" HorizontalAlignment="Right"/></Grid>
-    <Border Height="6" Background="#242424" CornerRadius="3"><Border x:Name="PerfCpuBar" Height="6" Background="{StaticResource AccentBrush}" CornerRadius="3" HorizontalAlignment="Left" Width="0"/></Border></StackPanel>
-    <StackPanel Margin="0,0,0,16"><Grid Margin="0,0,0,4"><TextBlock Text="RAM" FontSize="12" Foreground="#A0A0A0"/><TextBlock x:Name="PerfRamText" Text="-- / -- GB" FontSize="12" FontWeight="SemiBold" Foreground="White" HorizontalAlignment="Right"/></Grid>
-    <Border Height="6" Background="#242424" CornerRadius="3"><Border x:Name="PerfRamBar" Height="6" Background="#4CAF50" CornerRadius="3" HorizontalAlignment="Left" Width="0"/></Border></StackPanel>
-    <TextBlock x:Name="PerfUpdatedText" FontSize="10" Foreground="#505050" Margin="0,10,0,0"/>
-    </StackPanel></Border></Grid>
-    </Grid>
+</Grid>
 
 </Window>

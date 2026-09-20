@@ -35,12 +35,13 @@ jobs:
           Write-Host "Set app version to $tag"
 
       - name: Publish (win-x64, self-contained, single file)
-        run: dotnet publish .\OmenGamingShell\OmenGamingShell.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+        shell: pwsh
+        run: .\scripts\build-app.ps1
 
       - name: Smoke test (launch exe, fail on crash)
         shell: pwsh
         run: |
-          $exe = 'OmenGamingShell\bin\Release\net8.0-windows10.0.19041.0\win-x64\publish\OmenGamingShell.exe'
+          $exe = Join-Path $env:GITHUB_WORKSPACE 'OmenGamingShell.exe'
           if (-not (Test-Path $exe)) { Write-Error "Missing $exe"; exit 1 }
           function Count-CrashEvents {
             $n = 0
@@ -66,7 +67,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: OmenGamingShell-win-x64
-          path: OmenGamingShell\bin\Release\net8.0-windows10.0.19041.0\win-x64\publish\OmenGamingShell.exe
+          path: OmenGamingShell.exe
           if-no-files-found: error
 
   release:

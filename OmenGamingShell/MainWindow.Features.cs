@@ -1,4 +1,5 @@
 using System.IO;
+using System.Threading.Tasks;
 using System.Windows.Input;
 using System.Windows;
 using System.Windows.Controls;
@@ -10,8 +11,8 @@ namespace OmenGamingShell;
 
 public partial class MainWindow
 {
-    private DispatcherTimer _perfTimer = new() { Interval = TimeSpan.FromSeconds(3) };
     private DispatcherTimer _mediaPollTimer = new() { Interval = TimeSpan.FromSeconds(2) };
+    private readonly DispatcherTimer _earphoneTimer = new() { Interval = TimeSpan.FromSeconds(10) };
     private readonly DispatcherTimer _volumeBrightnessTimer = new() { Interval = TimeSpan.FromMilliseconds(150) };
     private int _lastVolumePct = -1;
     private int _lastBrightnessPct = -1;
@@ -35,10 +36,6 @@ public partial class MainWindow
 
     private void InitFeatures()
     {
-        // Performance monitor timer
-        _perfTimer.Tick += (_, _) => UpdatePerfStats();
-        _perfTimer.Start();
-
         // Media controls - event-driven (instant updates)
         MediaService.Start(async () => await Dispatcher.BeginInvoke(async () => await UpdateMediaControlsAsync()));
 
@@ -49,6 +46,14 @@ public partial class MainWindow
 
         // Volume & brightness - live bars + Windows-style OSD on any change
         InitVolumeBrightness();
+
+        // App catalog used by the WinKey overlay search - load cached copy eagerly
+        // so the first search is instant, then refresh from Windows in the background.
+        InstalledAppsCatalog.WarmUp();
+
+        // Earphone/audio endpoint status (slow poll - PnP query is expensive)
+        _earphoneTimer.Tick += (_, _) => CheckEarphoneStatus();
+        _earphoneTimer.Start();
 
         // Clipboard history
         ClipboardHistory.Start(Dispatcher);
@@ -67,35 +72,7 @@ public partial class MainWindow
         }
     }
 
-    // === PERFORMANCE MONITOR ===
-    private void UpdatePerfStats()
-    {
-        try
-        {
-            var stats = PerformanceMonitor.Sample();
-
-            if (PerfDetailsOverlay.Visibility == Visibility.Visible)
-            {
-                PerfCpuBar.Width = Math.Min(310, 310 * stats.CpuUsage / 100.0);
-                PerfRamBar.Width = Math.Min(310, 310 * stats.RamUsagePercent / 100.0);
-                PerfUpdatedText.Text = $"Updated {DateTime.Now:HH:mm:ss}";
-            }
-        }
-        catch { }
-    }
-
-    private void PerfStatsBadge_Click(object sender, MouseButtonEventArgs e)
-    {
-        UpdatePerfStats();
-        PerfDetailsOverlay.Visibility = Visibility.Visible;
-    }
-
-    private void ClosePerfOverlay(object sender, RoutedEventArgs e)
-    {
-        PerfDetailsOverlay.Visibility = Visibility.Collapsed;
-    }
-
-    // === MEDIA CONTROLS ===
+// === MEDIA CONTROLS ===
     private async Task UpdateMediaControlsAsync()
     {
         // Don't let media updates fight the game-cover hover state: hovering a cover
@@ -204,22 +181,15 @@ public partial class MainWindow
         await MediaService.PreviousAsync();
     }
 
-    private static void AnimateButtonFlash(Border border)
+    private static async void AnimateButtonFlash(Border border)
     {
         var original = border.Background;
         border.Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#FF003C"));
-        var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
-        timer.Tick += (_, _) => { border.Background = original; timer.Stop(); };
-        timer.Start();
+        await Task.Delay(200);
+        border.Background = original;
     }
 
     // === NOTIFICATION CENTER ===
-    private void NotificationCenterBell_Click(object sender, MouseButtonEventArgs e)
-    {
-        PopulateNotifications();
-        NotificationCenterOverlay.Visibility = Visibility.Visible;
-    }
-
     private void NotificationsHost_Click(object sender, MouseButtonEventArgs e)
     {
         PopulateNotifications();
@@ -298,7 +268,6 @@ public partial class MainWindow
         NotificationsEmpty.Visibility = NotificationCenter.Items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
-    private void CloseNotificationCenter(object sender, RoutedEventArgs e) => NotificationCenterOverlay.Visibility = Visibility.Collapsed;
     private void ClearNotifications_Click(object sender, RoutedEventArgs e)
     {
         if (NotificationCenter.HasTag(UpdateNotificationTag)) _updateDismissedThisSession = true;
@@ -527,7 +496,7 @@ public partial class MainWindow
         try
         {
             var cmd = "Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightness | Select-Object -ExpandProperty CurrentBrightness";
-            var psi = new System.Diagnostics.ProcessStartInfo("powershell", "-NoProfile -Command " + Quote(cmd))
+            var psi = new System.Diagnostics.ProcessStartInfo("powershell", PowerShellCommand(cmd))
             { RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true };
             var proc = System.Diagnostics.Process.Start(psi);
             var output = proc?.StandardOutput.ReadToEnd()?.Trim() ?? null;
@@ -559,7 +528,7 @@ public partial class MainWindow
         try
         {
             var cmd = "Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods | Invoke-CimMethod -MethodName WmiSetBrightness -Argument @{Brightness=" + percent + "; Timeout=1}";
-            var psi = new System.Diagnostics.ProcessStartInfo("powershell", "-NoProfile -Command " + Quote(cmd))
+            var psi = new System.Diagnostics.ProcessStartInfo("powershell", PowerShellCommand(cmd))
             { UseShellExecute = false, CreateNoWindow = true };
             System.Diagnostics.Process.Start(psi);
         }
@@ -630,23 +599,18 @@ public partial class MainWindow
         var track = VolumeBarTrack.ActualWidth;
         if (track <= 0) return;
         var pct = (int)Math.Round(Math.Clamp(pos.X / track, 0, 1) * 100);
+        if (pct == _lastVolumePct)
+        {
+            UpdateVolumeUI(pct);
+            return;
+        }
         SystemAudio.SetVolume(pct);
         _lastVolumePct = pct;
         UpdateVolumeUI(pct);
         ShowOsd(pct, false);
     }
 
-    private void VolumeBar_MouseLeave(object sender, MouseEventArgs e)
-    {
-        if (_volumeDragging)
-        {
-            _volumeDragging = false;
-            VolumeRow.ReleaseMouseCapture();
-        }
-    }
-
-    // --- Brightness slider drag ---
-    private void BrightnessBar_MouseDown(object sender, MouseButtonEventArgs e)
+private void BrightnessBar_MouseDown(object sender, MouseButtonEventArgs e)
     {
         if (e.ChangedButton != MouseButton.Left) return;
         _brightnessDragging = true;
@@ -674,24 +638,20 @@ public partial class MainWindow
         var track = BrightnessBarTrack.ActualWidth;
         if (track <= 0) return;
         var pct = (int)Math.Round(Math.Clamp(pos.X / track, 0, 1) * 100);
+        if (pct == _lastBrightnessPct)
+        {
+            UpdateBrightnessUI(pct);
+            return;
+        }
         SetSystemBrightness(pct);
         _lastBrightnessPct = pct;
         UpdateBrightnessUI(pct);
         ShowOsd(pct, true);
     }
 
-    private void BrightnessBar_MouseLeave(object sender, MouseEventArgs e)
+    private static string PowerShellCommand(string script)
     {
-        if (_brightnessDragging)
-        {
-            _brightnessDragging = false;
-            BrightnessRow.ReleaseMouseCapture();
-        }
-    }
-
-        private static string Quote(string s)
-    {
-        return "\"" + s.Replace("\"", "\\\"") + "\"";
+        return "-NoProfile -EncodedCommand " + Convert.ToBase64String(System.Text.Encoding.Unicode.GetBytes(script));
     }
 
     // --- Controller Status Button ---
@@ -700,12 +660,13 @@ public partial class MainWindow
         _ = Dispatcher.BeginInvoke(() =>
         {
             var connected = _controller.IsConnected;
-            ControllerIndicatorDot.Fill = connected
-                ? new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x00, 0xCC, 0x40))
-                : new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0x00, 0x3C));
             ControllerStatusBtn.Background = connected
                 ? new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromArgb(0x40, 0x00, 0xCC, 0x40))
                 : new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromArgb(0x40, 0xFF, 0x00, 0x3C));
+            ControllerStatusText.Text = connected ? "Connected" : "Disconnected";
+            ControllerStatusText.Foreground = connected
+                ? new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x00, 0xCC, 0x40))
+                : new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x60, 0x60, 0x60));
         });
     }
 
@@ -717,7 +678,7 @@ public partial class MainWindow
     }
 
 
-    // --- Earphone Status ---
+    // --- Audio Device Status ---
     private bool _lastEarphoneConnected;
 
     private void EarphoneStatus_Click(object sender, MouseButtonEventArgs e)
@@ -728,39 +689,50 @@ public partial class MainWindow
 
     private void CheckEarphoneStatus()
     {
+        _ = CheckEarphoneStatusAsync();
+    }
+
+    private async Task CheckEarphoneStatusAsync()
+    {
         try
         {
-            var cmd = "Get-PnpDevice -PresentOnly | Where-Object {$_.Class -eq 'AudioEndpoint' -or $_.FriendlyName -match 'headphone|headset|earphone|earbud|airpods|buds'} | Select-Object -First 1 -ExpandProperty Status";
-            var psi = new System.Diagnostics.ProcessStartInfo("powershell", "-NoProfile -Command " + Quote(cmd))
+            _earphoneTimer.Stop();
+            var cmd = "Get-PnpDevice -PresentOnly -Class AudioEndpoint -ErrorAction SilentlyContinue | Where-Object { $_.FriendlyName -match 'headphone|headset|earphone|earbud|airpods|buds|earb|handsfree|headset earspeaker|bluetooth.*audio' } | Select-Object -First 1 -ExpandProperty Status";
+            var psi = new System.Diagnostics.ProcessStartInfo("powershell", PowerShellCommand(cmd))
             { RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true };
-            var proc = System.Diagnostics.Process.Start(psi);
-            var output = proc?.StandardOutput.ReadToEnd()?.Trim() ?? "";
-            proc?.WaitForExit(5000);
+            using var proc = System.Diagnostics.Process.Start(psi);
+            if (proc is null) return;
+            var output = (await proc.StandardOutput.ReadToEndAsync().ConfigureAwait(true))?.Trim() ?? "";
+            if (!proc.WaitForExit(5000)) proc.Kill();
             var connected = output == "OK";
             if (connected != _lastEarphoneConnected)
             {
                 var wasConnected = _lastEarphoneConnected;
                 _lastEarphoneConnected = connected;
                 if (connected)
-                    Notify("Earphones connected", "Audio device connected", "Earphones or headset detected", IconAudio);
-                else if (wasConnected)
-                    Notify("Earphones disconnected", "Audio device disconnected", "Earphones or headset removed", IconAudio);
-                _ = Dispatcher.BeginInvoke(() =>
                 {
-                    EarphoneIndicatorDot.Fill = connected
-                        ? new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x00, 0xCC, 0x40))
-                        : new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0x00, 0x3C));
-                    EarphoneStatusBtn.Background = connected
-                        ? new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromArgb(0x40, 0x00, 0xCC, 0x40))
-                        : new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromArgb(0x40, 0xFF, 0x00, 0x3C));
-                    EarphoneStatusText.Text = connected ? "Connected" : "Disconnected";
-                    EarphoneStatusText.Foreground = connected
-                        ? new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x00, 0xCC, 0x40))
-                        : new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x60, 0x60, 0x60));
-                });
+                    NotificationCenter.RemoveTag(AudioNotificationTag);
+                    Notify("Audio device connected", "Audio device connected", "Headset or audio device detected", IconAudio, AudioNotificationTag);
+                }
+                else if (wasConnected)
+                {
+                    NotificationCenter.RemoveTag(AudioNotificationTag);
+                    Notify("Audio device disconnected", "Audio device disconnected", "Headset or audio device removed", IconAudio, AudioNotificationTag);
+                }
+                EarphoneStatusBtn.Background = connected
+                    ? new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromArgb(0x40, 0x00, 0xCC, 0x40))
+                    : new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromArgb(0x40, 0xFF, 0x00, 0x3C));
+                EarphoneStatusText.Text = connected ? "Connected" : "Disconnected";
+                EarphoneStatusText.Foreground = connected
+                    ? new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x00, 0xCC, 0x40))
+                    : new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x60, 0x60, 0x60));
             }
         }
         catch { }
+        finally
+        {
+            _earphoneTimer.Start();
+        }
     }
 
 }

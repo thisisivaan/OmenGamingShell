@@ -16,6 +16,7 @@ using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Media.Media3D;
 using System.Windows.Media.Imaging;
+using System.Threading;
 using System.Windows.Threading;
 
 namespace OmenGamingShell;
@@ -28,15 +29,19 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _clockTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     private readonly DispatcherTimer _cursorHideTimer = new() { Interval = TimeSpan.FromMilliseconds(650) };
     private readonly DispatcherTimer _notificationTimer = new() { Interval = TimeSpan.FromSeconds(4) };
+    private Action? _notificationAction;
     private readonly DispatcherTimer _coverExitTimer = new() { Interval = TimeSpan.FromMilliseconds(350) };
     private readonly DispatcherTimer _wifiScanTimer = new() { Interval = TimeSpan.FromSeconds(8) };
     private readonly DispatcherTimer _deviceScanTimer = new() { Interval = TimeSpan.FromSeconds(10) };
+    private readonly DispatcherTimer _searchDebounceTimer = new() { Interval = TimeSpan.FromMilliseconds(300) };
     private readonly DispatcherTimer _taskViewHotCornerTimer = new() { Interval = TimeSpan.FromMilliseconds(250) };
     private const string UpdateNotificationTag = "update";
     private const string UpdateNotificationIcon = "\uE895";
     private const string IconBatteryLow = "\uE9EE";
     private const string IconBatteryCritical = "\uE9ED";
     private const string BatteryNotificationTag = "battery";
+    private const string AudioNotificationTag = "audio";
+    private const string ControllerNotificationTag = "controller";
     private const int BatteryWarnPercent = 20;
     private const int BatteryCriticalPercent = 10;
     private const int BatteryShutdownPercent = 5;
@@ -134,6 +139,11 @@ public partial class MainWindow : Window
                 _wifiScanTimer.Stop();
         };
         _deviceScanTimer.Tick += async (_, _) => { await RefreshConnectedDevicesAsync(); };
+        _searchDebounceTimer.Tick += (_, _) =>
+        {
+            _searchDebounceTimer.Stop();
+            ExecuteSearch();
+        };
         _taskViewHotCornerTimer.Tick += (_, _) =>
         {
             _taskViewHotCornerTimer.Stop();
@@ -159,6 +169,7 @@ public partial class MainWindow : Window
         _ = RefreshConnectedDevicesAsync();
         _deviceScanTimer.Start();
         _ = PreloadBluetoothDevicesAsync();
+        _ = TrackerList.RefreshAsync();
         Loaded += async (_, _) =>
         {
             if (_keyboardGuard is null)
@@ -193,6 +204,7 @@ public partial class MainWindow : Window
                 await Task.WhenAny(bootTask, timeout);
             }
             catch { }
+            AutoResumeDownloads();
             LibraryArea.IsHitTestVisible = true;
             LibraryArea.Opacity = 1;
             ShellTopStatus.Opacity = 1;
@@ -363,7 +375,7 @@ try
 
     private void CloseAccessoriesOverlay(object sender, RoutedEventArgs e)
     {
-        AccessoriesOverlay.Visibility = Visibility.Collapsed;
+        SlideOut(AccessoriesOverlay, 0, 18, 180);
     }
 
     private async void RefreshAccessoriesOverlay(object sender, RoutedEventArgs e)
@@ -463,9 +475,22 @@ try
 
     private static void CopyDirectory(string source, string target)
     {
-        Directory.CreateDirectory(target);
-        foreach (var file in Directory.EnumerateFiles(source)) File.Copy(file, Path.Combine(target, Path.GetFileName(file)), true);
-        foreach (var directory in Directory.EnumerateDirectories(source)) CopyDirectory(directory, Path.Combine(target, Path.GetFileName(directory)));
+        try
+        {
+            Directory.CreateDirectory(target);
+            foreach (var file in Directory.EnumerateFiles(source))
+                File.Copy(file, Path.Combine(target, Path.GetFileName(file)), true);
+            foreach (var directory in Directory.EnumerateDirectories(source))
+            {
+                var info = new DirectoryInfo(directory);
+                if ((info.Attributes & FileAttributes.ReparsePoint) != 0) continue;
+                CopyDirectory(directory, Path.Combine(target, info.Name));
+            }
+        }
+        catch (Exception copyError)
+        {
+            ErrorLogStore.Log(copyError.Message, "Backup copy", copyError.ToString());
+        }
     }
     private void ErrorLog_Click(object sender, RoutedEventArgs e)
     {
@@ -560,7 +585,9 @@ try
     private static Task AnimateAsync(DependencyObject target, DependencyProperty property,
         double from, double to, int milliseconds, IEasingFunction? easing = null)
     {
-        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        // Complete on the animation thread (WPF Dispatcher). RunContinuationsAsynchronously
+        // hops callers onto the thread pool, and every overlay close then hits VerifyAccess.
+        var completion = new TaskCompletionSource();
         var animation = new DoubleAnimation(from, to, TimeSpan.FromMilliseconds(milliseconds))
         {
             EasingFunction = easing,
@@ -584,11 +611,17 @@ try
             }
             target.SetValue(property, to);
         }
-        animation.Completed += (_, _) =>
+        // Settle exactly once. The fallback below must never run after a normal completion:
+        // its Settle() writes the animation's end value, which would land on top of a newer
+        // state if the element has been reopened in the meantime.
+        var settled = 0;
+        void SettleOnce()
         {
-            Settle();
+            if (Interlocked.Exchange(ref settled, 1) == 1) return;
+            try { Settle(); } catch { }
             completion.TrySetResult();
-        };
+        }
+        animation.Completed += (_, _) => SettleOnce();
         if (target is UIElement element)
             element.BeginAnimation(property, animation);
         else if (target is Animatable animatable)
@@ -598,17 +631,27 @@ try
             completion.TrySetResult();
             return Task.CompletedTask;
         }
+        // Safety net in case the animation never reports completion. It has to settle on the
+        // UI thread: Settle() calls BeginAnimation/SetValue on a DispatcherObject, so running
+        // it from the thread pool throws, leaves the caller's await suspended forever and
+        // strands the overlay on screen.
         _ = Task.Delay(milliseconds + 200).ContinueWith(_ =>
         {
-            Settle();
-            completion.TrySetResult();
+            var dispatcher = (target as DispatcherObject)?.Dispatcher;
+            if (dispatcher is null || dispatcher.CheckAccess())
+            {
+                SettleOnce();
+                return;
+            }
+            dispatcher.BeginInvoke(SettleOnce);
         });
         return completion.Task;
     }
 
-    private static async Task AnimateInAsync(UIElement element, double fromX = 0, double fromY = 0,
+    private static async Task AnimateInAsync(FrameworkElement element, double fromX = 0, double fromY = 0,
         int milliseconds = 300)
     {
+        element.Tag = new object(); // new open token, invalidates any close still fading out
         var transform = element.RenderTransform as TranslateTransform;
         if (transform is null)
         {
@@ -625,13 +668,22 @@ try
             AnimateAsync(element, UIElement.OpacityProperty, 0, 1, milliseconds, easing),
             AnimateAsync(transform, TranslateTransform.XProperty, fromX, 0, milliseconds, easing),
             AnimateAsync(transform, TranslateTransform.YProperty, fromY, 0, milliseconds, easing));
+        if (!element.Dispatcher.CheckAccess())
+        {
+            await element.Dispatcher.InvokeAsync(() => element.IsHitTestVisible = true);
+            return;
+        }
         element.IsHitTestVisible = true;
     }
 
-    private static async Task AnimateOutAsync(UIElement element, double toX = 0, double toY = 0,
+    private static async Task AnimateOutAsync(FrameworkElement element, double toX = 0, double toY = 0,
         int milliseconds = 210)
     {
         if (element.Visibility != Visibility.Visible) return;
+        // Tag carries the "which open is this" token set when the overlay was opened. If it
+        // changed while we were fading out, the overlay was reopened mid-animation and this
+        // now-stale close must not hide it again.
+        var openToken = element.Tag;
         var transform = element.RenderTransform as TranslateTransform;
         if (transform is null)
         {
@@ -644,17 +696,51 @@ try
             AnimateAsync(element, UIElement.OpacityProperty, element.Opacity, 0, milliseconds, easing),
             AnimateAsync(transform, TranslateTransform.XProperty, transform.X, toX, milliseconds, easing),
             AnimateAsync(transform, TranslateTransform.YProperty, transform.Y, toY, milliseconds, easing));
-        element.Visibility = Visibility.Collapsed;
-        element.Opacity = 1;
-        transform.X = 0;
-        transform.Y = 0;
+        void Finish()
+        {
+            if (!ReferenceEquals(element.Tag, openToken))
+            {
+                // Reopened while fading out: drop this stale close and leave it open and usable.
+                PrepareOverlayForOpen(element);
+                return;
+            }
+            element.Visibility = Visibility.Collapsed;
+            element.Opacity = 1;
+            // The fade turned hit-testing off; a closed overlay must not stay that way, or the
+            // next time it is opened it is visible but ignores every click on it.
+            element.IsHitTestVisible = true;
+            transform.X = 0;
+            transform.Y = 0;
+        }
+        if (!element.Dispatcher.CheckAccess())
+        {
+            await element.Dispatcher.InvokeAsync(Finish);
+            return;
+        }
+        Finish();
     }
 
-    private static void SlideIn(UIElement element, double fromX = 0, double fromY = 0, int milliseconds = 300) =>
+    private static void SlideIn(FrameworkElement element, double fromX = 0, double fromY = 0, int milliseconds = 300) =>
         _ = AnimateInAsync(element, fromX, fromY, milliseconds);
 
-    private static void SlideOut(UIElement element, double toX = 0, double toY = 0, int milliseconds = 210) =>
+    private static void SlideOut(FrameworkElement element, double toX = 0, double toY = 0, int milliseconds = 210) =>
         _ = AnimateOutAsync(element, toX, toY, milliseconds);
+
+    // A faded-out overlay is collapsed and, if the close was interrupted, may still carry the
+    // fade's opacity/offset. Opening one has to restore all of that — otherwise it reappears
+    // in a half-closed state, with input still falling through to the shell behind it.
+    private static void PrepareOverlayForOpen(FrameworkElement overlay)
+    {
+        overlay.Tag = new object(); // new open token, invalidates any close still fading out
+        if (overlay.RenderTransform is TranslateTransform transform)
+        {
+            transform.X = 0;
+            transform.Y = 0;
+        }
+        overlay.Opacity = 1;
+        overlay.IsHitTestVisible = true;
+        overlay.Visibility = Visibility.Visible;
+    }
 
     private void Window_PreviewMouseMove(object sender, MouseEventArgs e)
     {
@@ -889,6 +975,8 @@ try
     {
         _selectedDetailsGame = game;
         GameDetailsPage.DataContext = game;
+        LaunchDetailsButton.Content = "LAUNCH GAME";
+        LaunchDetailsButton.Visibility = Visibility.Visible;
         HideGameBackground();
         GameDetailsPage.Visibility = Visibility.Visible;
         SlideIn(GameDetailsPage, 70, 0, 340);
@@ -898,7 +986,7 @@ try
     private void ContinueGame_Click(object sender, RoutedEventArgs e)
     {
         _lastHomeSelection = "Continue";
-        if (ContinueHost.DataContext is GameEntry game) OpenGameDetails(game);
+        OpenGameStore();
     }
 
     private IntPtr WindowMessageHook(IntPtr window, int message, IntPtr wParam, IntPtr lParam, ref bool handled)
@@ -965,12 +1053,26 @@ try
         EmptyLibrary.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
     }
 
-    private void ShowNotification(string message)
+    private void ShowNotification(string message, Action? onClick = null)
     {
+        _notificationAction = onClick;
         NotificationText.Text = message.ToUpperInvariant();
         NotificationToast.Visibility = Visibility.Visible;
+        if (!Topmost)
+        {
+            Topmost = true;
+            Dispatcher.BeginInvoke(() => Topmost = false, DispatcherPriority.ApplicationIdle);
+        }
         _notificationTimer.Stop();
         _notificationTimer.Start();
+    }
+
+    private void NotificationToast_Click(object sender, MouseButtonEventArgs e)
+    {
+        NotificationToast.Visibility = Visibility.Collapsed;
+        _notificationTimer.Stop();
+        _notificationAction?.Invoke();
+        _notificationAction = null;
     }
 
     private const string IconNetwork = "\uE701";
@@ -1120,34 +1222,48 @@ try
 
     private void UpdateContinuePlaying()
     {
-        var game = _allGames
-            .Where(entry => !entry.IsHidden && entry.LastPlayedUtc.HasValue)
-            .OrderByDescending(entry => entry.LastPlayedUtc)
-            .FirstOrDefault();
-
-        ContinueHost.DataContext = game;
-
-        if (game is null)
-        {
-            if (_homeSelected)
-            {
-                ContinueHost.Visibility = Visibility.Visible;
-                ContinueContent.Visibility = Visibility.Collapsed;
-                ContinueWelcomeText.Visibility = Visibility.Visible;
-                ContinueCoverBrush.ImageSource = null;
-            }
-            else
-            {
-                ContinueHost.Visibility = Visibility.Collapsed;
-            }
-            return;
-        }
-
-        ContinueContent.Visibility = Visibility.Visible;
-        ContinueWelcomeText.Visibility = Visibility.Collapsed;
+        ContinueWelcomeText.Visibility = _allGames.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         ContinueHost.Visibility = _homeSelected ? Visibility.Visible : Visibility.Collapsed;
-        ContinueGameName.Text = game.Name.ToUpperInvariant();
-        ContinueCoverBrush.ImageSource = LoadLocalImage(game.Cover);
+        if (_allGames.Count == 0) return;
+        RefreshStoreCollage();
+    }
+
+    private void ContinueHost_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (ContinueHost.ActualWidth <= 0 || ContinueHost.ActualHeight <= 0) return;
+        ContinueHost.Clip = new RectangleGeometry(new Rect(0, 0, ContinueHost.ActualWidth, ContinueHost.ActualHeight), 14, 14);
+    }
+
+    private void RefreshStoreCollage()
+    {
+        var covers = _allGames
+            .Where(entry => !entry.IsHidden && !string.IsNullOrWhiteSpace(entry.Cover) && File.Exists(entry.Cover))
+            .Select(entry => entry.Cover!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var tiles = new[] { ContinueStoreTile1, ContinueStoreTile2, ContinueStoreTile3, ContinueStoreTile4, ContinueStoreTile5, ContinueStoreTile6 };
+        var fallback = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#241414"));
+        var pool = new List<string>(covers);
+        var random = new Random();
+        for (var i = pool.Count - 1; i > 0; i--)
+        {
+            var j = random.Next(i + 1);
+            (pool[i], pool[j]) = (pool[j], pool[i]);
+        }
+        foreach (var tile in tiles)
+        {
+            if (pool.Count == 0)
+            {
+                tile.Background = fallback;
+                continue;
+            }
+            var cover = pool[0];
+            pool.RemoveAt(0);
+            var image = LoadLocalImage(cover);
+            tile.Background = image is not null
+                ? new ImageBrush(image) { Stretch = Stretch.UniformToFill }
+                : fallback;
+        }
     }
 
     private static ImageSource? LoadLocalImage(string? path)
@@ -1209,39 +1325,6 @@ try
             button.ContextMenu.Placement = PlacementMode.Center;
             button.ContextMenu.IsOpen = true;
         });
-    }
-
-    private void OpenGameFolder_Click(object sender, RoutedEventArgs e)
-    {
-        if (_selectedDetailsGame is null) return;
-        var folder = ResolveWorkingDirectory(_selectedDetailsGame);
-        if (Directory.Exists(folder))
-            Process.Start(new ProcessStartInfo("explorer.exe", $"\"{folder}\"") { UseShellExecute = true });
-    }
-
-    private void HideGame_Click(object sender, RoutedEventArgs e)
-    {
-        if (_selectedDetailsGame is null) return;
-        var game = _selectedDetailsGame;
-        game.IsHidden = !game.IsHidden;
-        LibraryPreferencesStore.SetHidden(game, game.IsHidden);
-        CloseGameDetails();
-        ApplyLibraryFilters();
-        StatusText.Text = game.IsHidden ? "GAME HIDDEN FROM LIBRARY" : "GAME RESTORED TO LIBRARY";
-    }
-
-    private void EditMetadata_Click(object sender, RoutedEventArgs e)
-    {
-        if (_selectedDetailsGame is null) return;
-        EditGameName.Text = _selectedDetailsGame.Name; EditGenres.Text = _selectedDetailsGame.Genres;
-        EditDeveloper.Text = _selectedDetailsGame.Developer; EditPublisher.Text = _selectedDetailsGame.Publisher;
-        EditReleaseDate.Text = _selectedDetailsGame.ReleaseDate; EditPlatforms.Text = _selectedDetailsGame.Platforms;
-        EditDescription.Text = _selectedDetailsGame.Description;
-        _pendingCorrectedCover = _selectedDetailsGame.Cover;
-        _pendingCorrectedBackground = _selectedDetailsGame.Background;
-        MetadataCorrectionOverlay.Visibility = Visibility.Visible;
-        SlideIn(MetadataCorrectionOverlay, 0, 22, 260);
-        EditGameName.Focus();
     }
 
     private void ChangeCover_Click(object sender, RoutedEventArgs e)
@@ -1514,6 +1597,8 @@ try
     {
         if (_gameCoverHovered || _customBackgroundActive || _slideshowGames.Count == 0 ||
             GameDetailsPage.Visibility == Visibility.Visible ||
+            GameStorePage.Visibility == Visibility.Visible ||
+            DownloadCenterPage.Visibility == Visibility.Visible ||
             IsWinKeyOverlayOpen ||
             SettingsOverlay.Visibility == Visibility.Visible ||
             PowerOverlay.Visibility == Visibility.Visible ||
@@ -1797,8 +1882,6 @@ try
         HideGameBackground();
     }
 
-    private void RefreshNetworkStatus_Click(object sender, RoutedEventArgs e) => UpdateNetworkSettingsStatus();
-
     private async void WifiStatusIcon_Click(object sender, MouseButtonEventArgs e) => await OpenConnectionsAsync(true);
     private async void BluetoothStatusIcon_Click(object sender, MouseButtonEventArgs e) => await OpenConnectionsAsync(false);
     private async void OpenAvailableNetworks_Click(object sender, RoutedEventArgs e) => await OpenConnectionsAsync(true);
@@ -1905,43 +1988,26 @@ try
         }
         catch (Exception exception) { ShowNotification($"Wi-Fi connection failed: {exception.Message}"); }
     }
-    private async void DisconnectWifi_Click(object sender, RoutedEventArgs e)
-    {
-        try { await ConnectionService.DisconnectWifiAsync(); ShowNotification("Wi-Fi disconnected"); }
-        catch (Exception exception) { ShowNotification($"Wi-Fi disconnect failed: {exception.Message}"); }
-    }
-    private async void PairBluetooth_Click(object sender, RoutedEventArgs e)
-    {
-        if (BluetoothDevicesList.SelectedItem is not BluetoothDevice device) return;
-        var paired = ConnectionService.PairBluetooth(new WindowInteropHelper(this).Handle, device);
-        if (paired)
-            Notify($"{device.Name} paired", "Device paired", $"{device.Name} was paired successfully");
-        else
-            ShowNotification($"Could not pair {device.Name}");
-        await RefreshConnectionsAsync(false);
-    }
-    private async void RemoveBluetooth_Click(object sender, RoutedEventArgs e)
-    {
-        if (BluetoothDevicesList.SelectedItem is not BluetoothDevice device) return;
-        var removed = await Task.Run(() => ConnectionService.RemoveBluetooth(device));
-        if (removed)
-            Notify($"{device.Name} removed", "Device removed", $"{device.Name} was removed");
-        else
-            ShowNotification($"Could not remove {device.Name}");
-        await RefreshConnectionsAsync(false);
-    }
     private async void BluetoothDeviceAction_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not Button { Tag: BluetoothDevice device }) return;
+        var wasConnected = device.Connected;
         bool success;
-        if (device.Connected) success = await Task.Run(() => ConnectionService.DisconnectBluetooth(device));
+        if (wasConnected) success = await Task.Run(() => ConnectionService.DisconnectBluetooth(device));
         else success = await Task.Run(() => ConnectionService.ConnectBluetooth(device));
         ShowNotification(success
-            ? device.Connected ? $"{device.Name} disconnected" : $"{device.Name} connected"
-            : $"Could not {(device.Connected ? "disconnect" : "connect")} {device.Name}");
-        await Task.Delay(1000);
-        await RefreshConnectionsAsync(false);
+            ? wasConnected ? $"{device.Name} disconnected" : $"{device.Name} connected"
+            : $"Could not {(wasConnected ? "disconnect" : "connect")} {device.Name}");
+        CheckEarphoneStatus();
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            await Task.Delay(2000);
+            await RefreshConnectionsAsync(false, showStatus: false);
+            var refreshed = _cachedBluetoothDevices.FirstOrDefault(d => d.Address == device.Address);
+            if (refreshed is not null && refreshed.Connected != wasConnected) break;
+        }
     }
+
     private void CloseConnections_Click(object sender, RoutedEventArgs e)
     {
         _wifiScanTimer.Stop();
@@ -1982,7 +2048,7 @@ try
         BluetoothStatusIcon.Opacity = bluetoothAvailable ? 1 : 0.35;
     }
 
-    private static bool IsBluetoothRadioAvailable()
+    internal static bool IsBluetoothRadioAvailable()
     {
         var parameters = new BluetoothFindRadioParams { Size = Marshal.SizeOf<BluetoothFindRadioParams>() };
         var findHandle = BluetoothFindFirstRadio(ref parameters, out var radioHandle);
@@ -1990,19 +2056,6 @@ try
         if (radioHandle != IntPtr.Zero) CloseHandle(radioHandle);
         BluetoothFindRadioClose(findHandle);
         return true;
-    }
-
-    private void OpenWindowsSetting_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is not Button { Tag: string uri }) return;
-        try { Process.Start(new ProcessStartInfo(uri) { UseShellExecute = true }); }
-        catch (Exception exception) { ShowNotification($"Could not open network settings: {exception.Message}"); }
-    }
-
-    private void OpenNetworkAdapters_Click(object sender, RoutedEventArgs e)
-    {
-        try { Process.Start(new ProcessStartInfo("control.exe", "ncpa.cpl") { UseShellExecute = true }); }
-        catch (Exception exception) { ShowNotification($"Could not open network adapters: {exception.Message}"); }
     }
 
     private void BackToSettingsHome_Click(object sender, RoutedEventArgs e)
@@ -2033,7 +2086,6 @@ try
         if (_inputSettings.PerformanceMode == "Performance") _inputSettings.PerformanceMode = "Ultimate";
         if (_inputSettings.PerformanceMode is not ("Ultimate" or "Balanced" or "Eco"))
             _inputSettings.PerformanceMode = "Balanced";
-        UpdatePerformanceModeButtons();
         ApplyInputMethod();
         ApplyPerformanceMode(false);
     }
@@ -2045,7 +2097,6 @@ try
             if (sender is not Button { Tag: string mode }) return;
             if (mode is not ("Ultimate" or "Balanced" or "Eco")) return;
             _inputSettings.PerformanceMode = mode;
-            UpdatePerformanceModeButtons();
             try { ControllerSettingsStore.Save(_inputSettings); }
             catch (Exception saveError) { ErrorLogStore.Log(saveError.Message, "Performance mode settings", saveError.ToString()); }
             ApplyPerformanceMode(true);
@@ -2056,10 +2107,6 @@ try
             ShowNotification("Performance mode selection failed");
         }
     }
-    private void UpdatePerformanceModeButtons()
-    {
-    }
-
     private void ApplyPerformanceMode(bool reportStatus)
     {
         var scheme = _inputSettings.PerformanceMode switch
@@ -2195,6 +2242,122 @@ try
 
     internal void CloseWinKeyOverlay() => _winKeyOverlay?.CloseOverlay();
 
+    private CancellationTokenSource? _storeSearchCts;
+
+    internal void OpenGameStore()
+    {
+        StoreSearchBox.Text = "";
+        StoreGamesGrid.ItemsSource = null;
+        StoreEmptyText.Visibility = Visibility.Visible;
+        StoreSearchSpinner.Visibility = Visibility.Collapsed;
+        GameStorePage.Visibility = Visibility.Visible;
+        MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
+    }
+
+    private void StoreBack_Click(object sender, RoutedEventArgs e) => CloseGameStore();
+
+    private void GameStorePage_MouseDown(object sender, MouseButtonEventArgs e) => CloseGameStore();
+    private void GameStorePanel_MouseDown(object sender, MouseButtonEventArgs e) => e.Handled = true;
+
+    private async void CloseGameStore()
+    {
+        _storeSearchCts?.Cancel();
+        await AnimateOutAsync(GameStorePage, 70, 0, 220);
+        MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
+    }
+
+    private DispatcherTimer? _storeSearchDebounce;
+
+    private void StoreSearchBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (GameStorePage.Visibility != Visibility.Visible) return;
+        _storeSearchDebounce?.Stop();
+        var query = StoreSearchBox.Text.Trim();
+        if (string.IsNullOrEmpty(query))
+        {
+            _storeSearchCts?.Cancel();
+            StoreSearchSpinner.Visibility = Visibility.Collapsed;
+            StoreGamesGrid.ItemsSource = null;
+            StoreEmptyText.Text = "Search for games on IGDB";
+            StoreEmptyText.Visibility = Visibility.Visible;
+            return;
+        }
+        StoreEmptyText.Visibility = Visibility.Collapsed;
+        StoreSearchSpinner.Visibility = Visibility.Visible;
+        _storeSearchDebounce ??= new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
+        _storeSearchDebounce.Tick += async (_, _) =>
+        {
+            _storeSearchDebounce.Stop();
+            _storeSearchCts?.Cancel();
+            _storeSearchCts = new CancellationTokenSource();
+            var token = _storeSearchCts.Token;
+            try
+            {
+                var installedNames = _allGames.Select(g => g.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                var results = await GameStoreSearchService.SearchAsync(query, installedNames, token);
+                if (token.IsCancellationRequested) return;
+                StoreGamesGrid.ItemsSource = results;
+                StoreEmptyText.Text = results.Count == 0 ? "No games found" : "";
+                StoreEmptyText.Visibility = results.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+            }
+            catch (OperationCanceledException) { }
+            catch
+            {
+                if (!token.IsCancellationRequested)
+                {
+                    StoreEmptyText.Text = "Search failed";
+                    StoreEmptyText.Visibility = Visibility.Visible;
+                }
+            }
+            finally { if (!token.IsCancellationRequested) StoreSearchSpinner.Visibility = Visibility.Collapsed; }
+        };
+        _storeSearchDebounce.Start();
+    }
+
+    private void StoreResultAction_Click(object sender, MouseButtonEventArgs e)
+    {
+        e.Handled = true;
+        if (sender is not FrameworkElement { Tag: GameStoreSearchService.SearchResult result }) return;
+        if (result.IsInstalled) return;
+        FlashElement(sender as FrameworkElement);
+        StartFitGirlDownload(result);
+    }
+
+    private void StoreResultRow_Click(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: GameStoreSearchService.SearchResult result }) return;
+        FlashElement(sender as FrameworkElement);
+        if (result.IsInstalled)
+        {
+            var game = _allGames.FirstOrDefault(g => g.Name.Equals(result.Name, StringComparison.OrdinalIgnoreCase));
+            if (game is not null)
+            {
+                OpenGameDetails(game);
+                return;
+            }
+        }
+        _selectedDetailsGame = null;
+        GameDetailsPage.DataContext = result;
+        LaunchDetailsButton.Content = "DOWNLOAD";
+        LaunchDetailsButton.Visibility = Visibility.Visible;
+        GameDetailsPage.Visibility = Visibility.Visible;
+        SlideIn(GameDetailsPage, 70, 0, 340);
+        DetailsBackButton.Focus();
+    }
+
+    private static void FlashElement(FrameworkElement? fe)
+    {
+        if (fe is null) return;
+        fe.RenderTransform = new ScaleTransform(0.95, 0.95, fe.ActualWidth / 2, fe.ActualHeight / 2);
+        var timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(100) };
+        timer.Tick += (_, _) =>
+        {
+            fe.RenderTransform = new ScaleTransform(1.0, 1.0, fe.ActualWidth / 2, fe.ActualHeight / 2);
+            timer.Stop();
+        };
+        timer.Start();
+    }
+
     internal void ApplyPerformanceModeFromOverlay(string mode)
     {
         if (mode is not ("Ultimate" or "Balanced" or "Eco")) return;
@@ -2215,9 +2378,21 @@ try
         NotificationCenterOverlay.Visibility = Visibility.Visible;
     }
 
+    internal void ShowConnectionsFromOverlay(bool wifi)
+    {
+        Show();
+        WindowState = WindowState.Maximized;
+        Activate();
+        Topmost = true;
+        Dispatcher.BeginInvoke(() => Topmost = false, DispatcherPriority.ApplicationIdle);
+        _ = OpenConnectionsAsync(wifi);
+    }
+
     private void OpenSearchFromHome()
     {
         if (GameDetailsPage.Visibility == Visibility.Visible ||
+            GameStorePage.Visibility == Visibility.Visible ||
+            DownloadCenterPage.Visibility == Visibility.Visible ||
             PowerOverlay.Visibility == Visibility.Visible ||
             SettingsOverlay.Visibility == Visibility.Visible) return;
         if (_homeSelected)
@@ -2233,6 +2408,12 @@ try
     private void GameSearchBox_TextChanged(object sender, TextChangedEventArgs e)
     {
         if (!IsInitialized) return;
+        _searchDebounceTimer.Stop();
+        _searchDebounceTimer.Start();
+    }
+
+    private void ExecuteSearch()
+    {
         var query = GameSearchBox.Text.Trim();
         var source = _allGames.Where(game => !game.IsHidden).ToList();
         var filtered = string.IsNullOrWhiteSpace(query)
@@ -2255,7 +2436,9 @@ try
         if (PowerOverlay.Visibility == Visibility.Visible || SettingsOverlay.Visibility == Visibility.Visible ||
             ConnectionsOverlay.Visibility == Visibility.Visible ||
             ErrorLogOverlay.Visibility == Visibility.Visible ||
-            GameDetailsPage.Visibility == Visibility.Visible || MetadataCorrectionOverlay.Visibility == Visibility.Visible) return;
+            GameDetailsPage.Visibility == Visibility.Visible || GameStorePage.Visibility == Visibility.Visible ||
+            DownloadCenterPage.Visibility == Visibility.Visible ||
+            MetadataCorrectionOverlay.Visibility == Visibility.Visible) return;
         if (Keyboard.FocusedElement is TextBoxBase or PasswordBox or ComboBox) return;
 
         GameSearchHost.Visibility = Visibility.Visible;
@@ -2545,9 +2728,9 @@ try
     private void DismissibleOverlay_MouseDown(object sender, MouseButtonEventArgs e)
     {
         if (!ReferenceEquals(e.OriginalSource, sender)) return;
-        if (ReferenceEquals(sender, ConnectionsOverlay)) ConnectionsOverlay.Visibility = Visibility.Collapsed;
+        if (ReferenceEquals(sender, ConnectionsOverlay)) CloseConnections_Click(this, new RoutedEventArgs());
         else if (ReferenceEquals(sender, ErrorLogOverlay)) CloseErrorLog();
-        else if (ReferenceEquals(sender, AccessoriesOverlay)) AccessoriesOverlay.Visibility = Visibility.Collapsed;
+        else if (ReferenceEquals(sender, AccessoriesOverlay)) CloseAccessoriesOverlay(this, new RoutedEventArgs());
         else if (ReferenceEquals(sender, MetadataCorrectionOverlay))
             CancelMetadataCorrection_Click(this, new RoutedEventArgs());
         else if (ReferenceEquals(sender, NotificationCenterOverlay)) NotificationCenterOverlay.Visibility = Visibility.Collapsed;
@@ -2738,6 +2921,27 @@ try
             e.Handled = true;
             return;
         }
+        if ((e.Key == Key.Escape || e.Key == Key.BrowserBack) &&
+            GameStorePage.Visibility == Visibility.Visible)
+        {
+            CloseGameStore();
+            e.Handled = true;
+            return;
+        }
+        if ((e.Key == Key.Escape || e.Key == Key.BrowserBack) &&
+            DownloadSettingsOverlay.Visibility == Visibility.Visible)
+        {
+            DownloadSettingsBack_Click(this, new RoutedEventArgs());
+            e.Handled = true;
+            return;
+        }
+        if ((e.Key == Key.Escape || e.Key == Key.BrowserBack) &&
+            DownloadCenterPage.Visibility == Visibility.Visible)
+        {
+            CloseDownloadCenter();
+            e.Handled = true;
+            return;
+        }
         if (e.Key == Key.Escape) e.Handled = true;
         if (e.Key == Key.F4 && Keyboard.Modifiers.HasFlag(ModifierKeys.Alt)) e.Handled = true;
     }
@@ -2924,6 +3128,10 @@ try
         if (MetadataCorrectionOverlay.Visibility == Visibility.Visible) return MetadataCorrectionOverlay;
         if (ConnectionsOverlay.Visibility == Visibility.Visible) return ConnectionsOverlay;
         if (SettingsOverlay.Visibility == Visibility.Visible) return SettingsOverlay;
+        // Keeps controller navigation cycling inside the download overlay instead of
+        // wandering onto the home screen while it is open.
+        if (DownloadSettingsOverlay.Visibility == Visibility.Visible) return DownloadSettingsOverlay;
+        if (DownloadCenterPage.Visibility == Visibility.Visible) return DownloadCenterPage;
         return null;
     }
 
@@ -2986,10 +3194,22 @@ private static List<TaskWindowEntry> GetTaskWindows(IntPtr shellHandle)
                 BringWindowToTop(target);
                 var foregroundThread = GetWindowThreadProcessId(GetForegroundWindow(), out _);
                 var targetThread = GetWindowThreadProcessId(target, out _);
-                var currentThread = GetCurrentThreadId();
-                if (foregroundThread != currentThread) AttachThreadInput(currentThread, foregroundThread, true);
-                if (targetThread != currentThread) AttachThreadInput(currentThread, targetThread, true);
-                SetForegroundWindow(target);
+                var currentThread = GetNativeThreadId();
+                var attachedForeground = false;
+                var attachedTarget = false;
+                try
+                {
+                    if (foregroundThread != currentThread)
+                        attachedForeground = AttachThreadInput(currentThread, foregroundThread, true);
+                    if (targetThread != currentThread)
+                        attachedTarget = AttachThreadInput(currentThread, targetThread, true);
+                    SetForegroundWindow(target);
+                }
+                finally
+                {
+                    if (attachedTarget) AttachThreadInput(currentThread, targetThread, false);
+                    if (attachedForeground) AttachThreadInput(currentThread, foregroundThread, false);
+                }
             }
         }
         catch (Exception exception)
@@ -3013,7 +3233,7 @@ private static List<TaskWindowEntry> GetTaskWindows(IntPtr shellHandle)
         if (DwmGetWindowAttribute(handle, 14, out int cloaked, sizeof(int)) == 0 &&
             cloaked == 1 && !minimized) return false;
         var extendedStyle = GetWindowLong(handle, -20);
-        if ((extendedStyle & 0x08000000) != 0) return false;
+        if ((extendedStyle & (0x08000000 | 0x00000080)) != 0) return false;
         if (!GetWindowRect(handle, out var rectangle) || rectangle.Right - rectangle.Left < 100 ||
             rectangle.Bottom - rectangle.Top < 80) return false;
         var className = new System.Text.StringBuilder(256);
@@ -3207,7 +3427,7 @@ private static List<TaskWindowEntry> GetTaskWindows(IntPtr shellHandle)
         var foreground = GetForegroundWindow();
         var foregroundThread = GetWindowThreadProcessId(foreground, out _);
         var targetThread = GetWindowThreadProcessId(window.Handle, out _);
-        var currentThread = GetCurrentThreadId();
+        var currentThread = GetNativeThreadId();
         try
         {
             if (foregroundThread != currentThread) AttachThreadInput(currentThread, foregroundThread, true);
@@ -3314,9 +3534,12 @@ private static List<TaskWindowEntry> GetTaskWindows(IntPtr shellHandle)
         if (ConnectionsOverlay.Visibility == Visibility.Visible) btn = ConnectionsBackButton;
         else if (ErrorLogOverlay.Visibility == Visibility.Visible) btn = ErrorLogBackButton;
         else if (BackupSettingsOverlay.Visibility == Visibility.Visible) btn = BackupSettingsBackButton;
+        else if (DownloadSettingsOverlay.Visibility == Visibility.Visible) btn = DownloadSettingsBackButton;
         else if (PowerOverlay.Visibility == Visibility.Visible) btn = PowerBackButton;
         else if (SettingsOverlay.Visibility == Visibility.Visible) btn = SettingsBackButton;
         else if (GameDetailsPage.Visibility == Visibility.Visible) btn = DetailsBackButton;
+        else if (GameStorePage.Visibility == Visibility.Visible) btn = StoreBackButton;
+        else if (DownloadCenterPage.Visibility == Visibility.Visible) btn = DownloadCenterBackButton;
         if (btn is null) return;
         var transform = new ScaleTransform(1.3, 1.3, 0.5, 0.5);
         btn.RenderTransform = transform;
@@ -3335,9 +3558,13 @@ private static List<TaskWindowEntry> GetTaskWindows(IntPtr shellHandle)
         else if (MetadataCorrectionOverlay.Visibility == Visibility.Visible)
             CancelMetadataCorrection_Click(this, new RoutedEventArgs());
         else if (BackupSettingsOverlay.Visibility == Visibility.Visible) CloseBackupSettings();
+        else if (DownloadSettingsOverlay.Visibility == Visibility.Visible)
+            DownloadSettingsBack_Click(this, new RoutedEventArgs());
         else if (GameSearchHost.Visibility == Visibility.Visible &&
                  (GameSearchBox.IsKeyboardFocusWithin || !string.IsNullOrWhiteSpace(GameSearchBox.Text))) CloseGameSearch();
         else if (GameDetailsPage.Visibility == Visibility.Visible) CloseGameDetails();
+        else if (GameStorePage.Visibility == Visibility.Visible) CloseGameStore();
+        else if (DownloadCenterPage.Visibility == Visibility.Visible) CloseDownloadCenter();
         else if (PowerOverlay.Visibility == Visibility.Visible) ClosePowerOptions();
         else if (SettingsOverlay.Visibility == Visibility.Visible &&
                  (OsSettingsPanel.Visibility == Visibility.Visible ||
@@ -3389,6 +3616,7 @@ private static List<TaskWindowEntry> GetTaskWindows(IntPtr shellHandle)
     {
         CloseHomeTaskWindows();
         if (GameDetailsPage.Visibility == Visibility.Visible) CloseGameDetails();
+        if (GameStorePage.Visibility == Visibility.Visible) CloseGameStore();
         if (PowerOverlay.Visibility == Visibility.Visible) ClosePowerOptions();
         if (SettingsOverlay.Visibility == Visibility.Visible) CloseSettings();
         GameSearchBox.Text = string.Empty;
@@ -3479,8 +3707,6 @@ private static List<TaskWindowEntry> GetTaskWindows(IntPtr shellHandle)
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetWindowTextLength(IntPtr window);
     [DllImport("user32.dll")]
-    private static extern IntPtr GetWindow(IntPtr window, uint command);
-    [DllImport("user32.dll")]
     private static extern int GetWindowLong(IntPtr window, int index);
     [DllImport("user32.dll")]
     private static extern bool GetWindowRect(IntPtr window, out NativeRect rectangle);
@@ -3498,11 +3724,13 @@ private static List<TaskWindowEntry> GetTaskWindows(IntPtr shellHandle)
     private static extern IntPtr SetFocus(IntPtr window);
     [DllImport("user32.dll")]
     private static extern bool AttachThreadInput(uint attachThread, uint attachToThread, bool attach);
-    [DllImport("kernel32.dll")]
+    [DllImport("kernel32.dll", EntryPoint = "GetCurrentThreadId", ExactSpelling = true)]
     private static extern uint GetCurrentThreadId();
-    [DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern IntPtr ShellExecute(IntPtr window, string operation, string file,
-        string? parameters, string? directory, int showCommand);
+    private static uint GetNativeThreadId()
+    {
+        try { return GetCurrentThreadId(); }
+        catch (EntryPointNotFoundException) { return GetWindowThreadProcessId(GetForegroundWindow(), out _); }
+    }
     [DllImport("dwmapi.dll")]
     private static extern int DwmRegisterThumbnail(IntPtr destinationWindow, IntPtr sourceWindow, out IntPtr thumbnail);
     [DllImport("dwmapi.dll")]
@@ -3609,6 +3837,254 @@ private static List<TaskWindowEntry> GetTaskWindows(IntPtr shellHandle)
                 ? Visibility.Visible : Visibility.Collapsed;
         else
             arrow.Visibility = Visibility.Collapsed;
+    }
+
+    // ── Download Center ──
+
+    private void DownloadCenter_Click(object sender, RoutedEventArgs e) => OpenDownloadCenter();
+
+    private void AutoResumeDownloads()
+    {
+        try
+        {
+            var saved = DownloadCenterService.LoadState();
+            if (saved.Count == 0) return;
+
+            DownloadCenterService.Init(Dispatcher);
+            DownloadCenterService.DownloadsChanged -= OnDownloadsChanged;
+            DownloadCenterService.DownloadsChanged += OnDownloadsChanged;
+            DownloadCenterService.NotificationRequested -= OnDownloadNotification;
+            DownloadCenterService.NotificationRequested += OnDownloadNotification;
+
+            foreach (var state in saved)
+            {
+                if (string.IsNullOrEmpty(state.MagnetUri)) continue;
+                LogDownload($"[{state.Name}] Auto-resuming saved download...");
+                var item = DownloadCenterService.AddDownload(state.Name, state.CoverUrl);
+                item.Status = DownloadStatus.Searching;
+                item.RetryCount = state.RetryCount;
+                _ = DownloadCenterService.StartDownloadAsync(item, state.MagnetUri);
+            }
+        }
+        catch { }
+    }
+
+    private void OpenDownloadCenter()
+    {
+        DownloadCenterService.Init(Dispatcher);
+        DownloadCenterService.DownloadsChanged -= OnDownloadsChanged;
+        DownloadCenterService.DownloadsChanged += OnDownloadsChanged;
+        DownloadCenterService.NotificationRequested -= OnDownloadNotification;
+        DownloadCenterService.NotificationRequested += OnDownloadNotification;
+        RefreshDownloadCenterList();
+        PrepareOverlayForOpen(DownloadCenterPage);
+        // Focus into the page itself: a window-level MoveFocus lands on the home screen's
+        // Continue tile, leaving the controller navigating the shell behind the overlay.
+        DownloadCenterPage.MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
+    }
+
+    private void DownloadCenterBack_Click(object sender, RoutedEventArgs e) => CloseDownloadCenter();
+
+    private void DownloadCenterPage_MouseDown(object sender, MouseButtonEventArgs e) => CloseDownloadCenter();
+    private void DownloadCenterPanel_MouseDown(object sender, MouseButtonEventArgs e) => e.Handled = true;
+
+    private async void CloseDownloadCenter()
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(CloseDownloadCenter);
+            return;
+        }
+        if (DownloadCenterPage.Visibility != Visibility.Visible) return;
+        DownloadCenterPage.IsHitTestVisible = false;
+        DownloadCenterService.DownloadsChanged -= OnDownloadsChanged;
+        DownloadCenterService.NotificationRequested -= OnDownloadNotification;
+        try
+        {
+            await AnimateOutAsync(DownloadCenterPage, 70, 0, 220);
+        }
+        catch
+        {
+            DownloadCenterPage.Visibility = Visibility.Collapsed;
+            DownloadCenterPage.Opacity = 1;
+            DownloadCenterPage.IsHitTestVisible = true;
+            var t = DownloadCenterPage.RenderTransform as TranslateTransform;
+            if (t is not null) { t.X = 0; t.Y = 0; }
+        }
+        MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
+    }
+
+    private void OnDownloadsChanged()
+    {
+        if (Dispatcher.CheckAccess())
+            RefreshDownloadCenterList();
+        else
+            Dispatcher.BeginInvoke(RefreshDownloadCenterList);
+    }
+
+    private void OnDownloadNotification(string message)
+    {
+        ShowNotification(message, () => OpenDownloadCenter());
+    }
+
+    private void DownloadCenterSettings_Click(object sender, RoutedEventArgs e)
+    {
+        DownloadPathText.Text = TorrentDownloadService.GetDownloadPath();
+        PrepareOverlayForOpen(DownloadSettingsOverlay);
+        DownloadSettingsOverlay.MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
+    }
+
+    private async void DownloadSettingsBack_Click(object sender, RoutedEventArgs e)
+    {
+        if (DownloadSettingsOverlay.Visibility != Visibility.Visible) return;
+        DownloadSettingsOverlay.IsHitTestVisible = false;
+        try { await AnimateOutAsync(DownloadSettingsOverlay, 70, 0, 220); }
+        catch { DownloadSettingsOverlay.Visibility = Visibility.Collapsed; DownloadSettingsOverlay.Opacity = 1; DownloadSettingsOverlay.IsHitTestVisible = true; var t2 = DownloadSettingsOverlay.RenderTransform as TranslateTransform; if (t2 is not null) { t2.X = 0; t2.Y = 0; } }
+        MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
+    }
+
+    private void DownloadSettingsOverlay_MouseDown(object sender, MouseButtonEventArgs e) => DownloadSettingsBack_Click(sender, e);
+    private void DownloadSettingsPanel_MouseDown(object sender, MouseButtonEventArgs e) => e.Handled = true;
+
+    private void ChangeDownloadPath_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var dialog = new Microsoft.Win32.OpenFolderDialog
+            {
+                Title = "Select Download Location",
+                FolderName = TorrentDownloadService.GetDownloadPath(),
+            };
+
+            if (dialog.ShowDialog() == true)
+            {
+                TorrentDownloadService.SetDownloadPath(dialog.FolderName);
+                DownloadPathText.Text = dialog.FolderName;
+                ShowNotification($"Download path set to: {System.IO.Path.GetFileName(dialog.FolderName)}");
+            }
+        }
+        catch { }
+    }
+
+    private void RefreshDownloadCenterList()
+    {
+        var items = DownloadCenterService.GetDownloads();
+        DownloadCenterGrid.ItemsSource = items;
+        DownloadCenterEmptyText.Visibility = items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+
+        var active = DownloadCenterService.ActiveCount;
+        if (active > 0)
+        {
+            DownloadCountBadge.Visibility = Visibility.Visible;
+            DownloadCountText.Text = active.ToString();
+        }
+        else
+        {
+            DownloadCountBadge.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    private void DownloadPause_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { Tag: DownloadItem item })
+        {
+            FlashElement(sender as FrameworkElement);
+            DownloadCenterService.PauseDownload(item);
+        }
+    }
+
+    private void DownloadResume_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { Tag: DownloadItem item })
+        {
+            FlashElement(sender as FrameworkElement);
+            DownloadCenterService.ResumeDownload(item);
+        }
+    }
+
+    private void DownloadCancel_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { Tag: DownloadItem item })
+        {
+            FlashElement(sender as FrameworkElement);
+            DownloadCenterService.CancelDownload(item);
+        }
+    }
+
+    private void OpenDownloadFolder_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: DownloadItem item }) return;
+        FlashElement(sender as FrameworkElement);
+        DownloadCenterService.OpenDownloadFolder(item);
+    }
+
+    private async void StartFitGirlDownload(GameStoreSearchService.SearchResult result)
+    {
+        DownloadCenterService.Init(Dispatcher);
+        DownloadCenterService.DownloadsChanged -= OnDownloadsChanged;
+        DownloadCenterService.DownloadsChanged += OnDownloadsChanged;
+        DownloadCenterService.NotificationRequested -= OnDownloadNotification;
+        DownloadCenterService.NotificationRequested += OnDownloadNotification;
+
+        var item = DownloadCenterService.AddDownload(result.Name, result.Cover);
+        item.Status = DownloadStatus.Searching;
+
+        ShowNotification($"Downloading {result.Name}", () => OpenDownloadCenter());
+
+        try
+        {
+            // Cheap no-op when the cached list is still fresh; keeps the tracker
+            // list current on a shell that stays running for weeks.
+            _ = TrackerList.RefreshAsync();
+
+            LogDownload($"[{result.Name}] Starting FitGirl search...");
+            item.Status = DownloadStatus.Matching;
+            var match = await FitGirlScrapingService.FindBestMatchAsync(result.Name);
+
+            if (match is null)
+            {
+                LogDownload($"[{result.Name}] No match found. Failing.");
+                DownloadCenterService.Fail(item, "No exact FitGirl match found");
+                return;
+            }
+
+            LogDownload($"[{result.Name}] Match found: {match.Title} (score={match.Score}) URL={match.Url}");
+            item.StatusText = "Extracting download links...";
+
+            var magnet = await FitGirlScrapingService.ExtractMagnetLinkAsync(match.Url);
+            var torrentUrl = await FitGirlScrapingService.ExtractTorrentFileUrlAsync(match.Url);
+
+            LogDownload($"[{result.Name}] Torrent file: {(torrentUrl is not null ? "found" : "none")}");
+
+            if (string.IsNullOrEmpty(magnet))
+            {
+                LogDownload($"[{result.Name}] Magnet link extraction failed.");
+                DownloadCenterService.Fail(item, "Could not extract magnet link");
+                return;
+            }
+
+            LogDownload($"[{result.Name}] Magnet: {magnet[..Math.Min(80, magnet.Length)]}...");
+            await DownloadCenterService.StartDownloadAsync(item, magnet, torrentUrl);
+            LogDownload($"[{result.Name}] Torrent engine started.");
+        }
+        catch (Exception ex)
+        {
+            LogDownload($"[{result.Name}] EXCEPTION: {ex.Message}");
+            DownloadCenterService.Fail(item, $"Error: {ex.Message}");
+        }
+    }
+
+    private static void LogDownload(string message)
+    {
+        try
+        {
+            var folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "OmenGamingShell", "Logs");
+            Directory.CreateDirectory(folder);
+            File.AppendAllText(Path.Combine(folder, "downloads.log"),
+                $"[{DateTime.Now:HH:mm:ss}] {message}\n");
+        }
+        catch { }
     }
 }
 

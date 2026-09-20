@@ -1,0 +1,18 @@
+<Project>
+
+  <!--
+    Keep build intermediates out of the working tree.
+
+    With the .NET 8 artifacts layout, every project's bin/ and obj/ output goes to
+    a single folder next to the repo instead of inside it, so the only build
+    artifact left in the main dir is the app exe itself (see scripts/build-app.ps1).
+
+    Applies to both projects: OmenGamingShell and OmenGamingShell.Installer.
+    Delete the sibling folder any time to force a clean build.
+  -->
+  <PropertyGroup>
+    <UseArtifactsOutput>true</UseArtifactsOutput>
+    <ArtifactsPath>$(MSBuildThisFileDirectory)..\OmenGamingShell-build</ArtifactsPath>
+  </PropertyGroup>
+
+</Project>

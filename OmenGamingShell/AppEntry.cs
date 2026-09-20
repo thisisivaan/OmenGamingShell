@@ -18,19 +18,24 @@ public sealed class AppEntry
         {
             if (IsUwp)
             {
-                Process.Start(new ProcessStartInfo("explorer.exe", $"shell:AppsFolder\\{Target}")
-                    { UseShellExecute = false });
+                if (string.IsNullOrWhiteSpace(Target)) return;
+                Process.Start(new ProcessStartInfo($"shell:AppsFolder\\{Target}")
+                    { UseShellExecute = true });
                 return;
             }
+            var target = Environment.ExpandEnvironmentVariables(Target);
+            if (string.IsNullOrWhiteSpace(target)) return;
+            var isLink = target.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase);
             var startInfo = new ProcessStartInfo
             {
-                FileName = Target,
-                UseShellExecute = Target.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase)
+                FileName = target,
+                UseShellExecute = true
             };
-            var directory = !IsUwp && Target.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
-                ? Path.GetDirectoryName(Target)
-                : null;
-            if (!string.IsNullOrWhiteSpace(directory)) startInfo.WorkingDirectory = directory;
+            if (!isLink && File.Exists(target))
+            {
+                var directory = Path.GetDirectoryName(target);
+                if (!string.IsNullOrWhiteSpace(directory)) startInfo.WorkingDirectory = directory;
+            }
             Process.Start(startInfo);
         }
         catch { }

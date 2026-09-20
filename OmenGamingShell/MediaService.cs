@@ -1,4 +1,3 @@
-using System.Runtime.InteropServices;
 using Windows.Media.Control;
 using Windows.Storage.Streams;
 
@@ -8,33 +7,51 @@ public sealed record MediaInfo(string Title, string Artist, string AppName, bool
 
 public static class MediaService
 {
-    private static GlobalSystemMediaTransportControlsSessionManager? _manager;
+    private static readonly object Sync = new();
+    private static Task<GlobalSystemMediaTransportControlsSessionManager>? _managerTask;
     private static GlobalSystemMediaTransportControlsSession? _session;
+    private static GlobalSystemMediaTransportControlsSession? _subscribedSession;
     private static Action? _onChanged;
 
-    private static async Task<GlobalSystemMediaTransportControlsSessionManager> GetManagerAsync()
+    public static Task<GlobalSystemMediaTransportControlsSessionManager> GetManagerAsync()
     {
-        if (_manager is not null) return _manager;
-        _manager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
-        _manager.CurrentSessionChanged += OnCurrentSessionChanged;
-        _session = _manager.GetCurrentSession();
-        AttachSessionEvents();
-        return _manager;
+        lock (Sync)
+        {
+            _managerTask ??= InitAsync();
+            return _managerTask;
+        }
     }
 
-    private static void OnCurrentSessionChanged(GlobalSystemMediaTransportControlsSessionManager sender, CurrentSessionChangedEventArgs args)
+    private static async Task<GlobalSystemMediaTransportControlsSessionManager> InitAsync()
     {
-        _session = sender?.GetCurrentSession();
-        AttachSessionEvents();
-        _onChanged?.Invoke();
+        var manager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
+        _session = manager.GetCurrentSession();
+        AttachSessionEvents(_session);
+        manager.CurrentSessionChanged += (_, _) =>
+        {
+            lock (Sync)
+            {
+                _session = manager.GetCurrentSession();
+                AttachSessionEvents(_session);
+            }
+            _onChanged?.Invoke();
+        };
+        return manager;
     }
 
-    private static void AttachSessionEvents()
+    private static void AttachSessionEvents(GlobalSystemMediaTransportControlsSession? session)
     {
-        if (_session is null) return;
-        _session.MediaPropertiesChanged += OnSessionChanged;
-        _session.TimelinePropertiesChanged += OnSessionChanged;
-        _session.PlaybackInfoChanged += OnSessionChanged;
+        if (_subscribedSession is not null)
+        {
+            _subscribedSession.MediaPropertiesChanged -= OnSessionChanged;
+            _subscribedSession.TimelinePropertiesChanged -= OnSessionChanged;
+            _subscribedSession.PlaybackInfoChanged -= OnSessionChanged;
+        }
+        _subscribedSession = session;
+        if (session is null) return;
+        session.MediaPropertiesChanged += OnSessionChanged;
+        session.TimelinePropertiesChanged += OnSessionChanged;
+        session.PlaybackInfoChanged += OnSessionChanged;
     }
 
     private static void OnSessionChanged(GlobalSystemMediaTransportControlsSession sender, MediaPropertiesChangedEventArgs args) => _onChanged?.Invoke();
@@ -50,7 +67,7 @@ public static class MediaService
     private static async Task<GlobalSystemMediaTransportControlsSession?> GetSessionAsync()
     {
         var manager = await GetManagerAsync();
-        return _session ?? manager.GetCurrentSession();
+        return manager.GetCurrentSession();
     }
 
     public static async Task<MediaInfo?> GetCurrentMediaAsync()
@@ -109,49 +126,5 @@ public static class MediaService
             if (session is not null) await session.TrySkipPreviousAsync();
         }
         catch { }
-    }
-
-    public static void VolumeDown() => SendMediaKey(0xAE);
-
-    public static void VolumeUp() => SendMediaKey(0xAF);
-
-    public static void MuteVolume() => SendMediaKey(0xAD);
-
-    private static void SendMediaKey(ushort vk)
-    {
-        try
-        {
-            var down = new INPUT { Type = 1, Data = new INPUTUNION { Vk = new KEYBDINPUT { Vk = vk, Scan = 0, Flags = 0, Time = 0, ExtraInfo = IntPtr.Zero } } };
-            var up = new INPUT { Type = 1, Data = new INPUTUNION { Vk = new KEYBDINPUT { Vk = vk, Scan = 0, Flags = 2, Time = 0, ExtraInfo = IntPtr.Zero } } };
-            var inputs = new[] { down, up };
-            SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
-        }
-        catch { }
-    }
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct INPUT
-    {
-        public uint Type;
-        public INPUTUNION Data;
-    }
-
-    [StructLayout(LayoutKind.Explicit)]
-    private struct INPUTUNION
-    {
-        [FieldOffset(0)] public KEYBDINPUT Vk;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct KEYBDINPUT
-    {
-        public ushort Vk;
-        public ushort Scan;
-        public uint Flags;
-        public uint Time;
-        public IntPtr ExtraInfo;
     }
 }

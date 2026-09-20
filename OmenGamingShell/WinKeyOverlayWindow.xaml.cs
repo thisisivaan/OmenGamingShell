@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO;
+using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
@@ -13,19 +14,29 @@ namespace OmenGamingShell;
 
 public partial class WinKeyOverlayWindow : Window
 {
+    private static readonly Brush BatteryGreen = CreateFrozenBrush("#38D878");
+    private static readonly Brush BatteryYellow = CreateFrozenBrush("#FFC928");
+    private static readonly Brush BatteryRed = CreateFrozenBrush("#FF003C");
     private readonly MainWindow _shell;
     private IReadOnlyList<TaskWindowEntry> _windows = Array.Empty<TaskWindowEntry>();
     private IntPtr _previousForeground;
     private bool _suppressRestore;
     private bool _overlayOpen;
+    private bool _lastNetworkAvailable = true;
+    private int _statusTick;
     private readonly DispatcherTimer _dashboardTimer = new() { Interval = TimeSpan.FromSeconds(2) };
+    private readonly DispatcherTimer _statusTimer = new() { Interval = TimeSpan.FromSeconds(1) };
+    private readonly DispatcherTimer _captureDebounce = new() { Interval = TimeSpan.FromMilliseconds(180) };
 
     public WinKeyOverlayWindow(MainWindow shell)
     {
         _shell = shell;
         InitializeComponent();
         _dashboardTimer.Tick += (_, _) => RefreshDashboardSafe();
+        _statusTimer.Tick += (_, _) => RefreshStatusBar();
+        _captureDebounce.Tick += (_, _) => { _captureDebounce.Stop(); RefreshCaptures(); };
         NotificationCenter.Updated += OnNotificationCenterUpdated;
+        Closed += (_, _) => NotificationCenter.Updated -= OnNotificationCenterUpdated;
     }
 
     public void OpenOverlay()
@@ -44,8 +55,9 @@ public partial class WinKeyOverlayWindow : Window
         PopulateWindows();
         RefreshApps(string.Empty);
         RefreshDashboardSafe();
+        RefreshStatusBar();
         UpdatePerfModeDisplay();
-        _ = Task.Run(() => { var _ = InstalledAppsCatalog.GetApps(); });
+        InstalledAppsCatalog.WarmUp();
 
         Dispatcher.BeginInvoke(() =>
         {
@@ -54,6 +66,7 @@ public partial class WinKeyOverlayWindow : Window
             UpdateLayout();
             RefreshCaptures();
             _dashboardTimer.Start();
+            _statusTimer.Start();
         }, DispatcherPriority.Loaded);
     }
 
@@ -62,15 +75,10 @@ public partial class WinKeyOverlayWindow : Window
         if (!_overlayOpen) return;
         _overlayOpen = false;
         _dashboardTimer.Stop();
+        _statusTimer.Stop();
+        _captureDebounce.Stop();
 
         SearchBox.Text = string.Empty;
-        WindowList.ItemsSource = null;
-        AppsList.ItemsSource = null;
-        WindowsSection.Visibility = Visibility.Collapsed;
-        AppsSection.Visibility = Visibility.Collapsed;
-        EmptyHint.Visibility = Visibility.Collapsed;
-
-        Hide();
         WindowList.ItemsSource = null;
         AppsList.ItemsSource = null;
         WindowsSection.Visibility = Visibility.Collapsed;
@@ -97,6 +105,7 @@ public partial class WinKeyOverlayWindow : Window
         bool isPrintable = key is >= Key.A and <= Key.Z ||
                            key is >= Key.D0 and <= Key.D9 ||
                            key is >= Key.NumPad0 and <= Key.NumPad9 ||
+                           key == Key.Decimal ||
                            key == Key.Space || key == Key.Oem1 || key == Key.Oem2 ||
                            key == Key.Oem3 || key == Key.Oem4 || key == Key.Oem5 ||
                            key == Key.Oem6 || key == Key.Oem7 || key == Key.Oem8 ||
@@ -131,7 +140,7 @@ public partial class WinKeyOverlayWindow : Window
         var source = e.OriginalSource as DependencyObject;
         if (FindAncestor<Button>(source) is not null) return;
         if (e.OriginalSource is TextBox) return;
-        if (FindAncestor<Border>(source) is { } inner && (inner.Name == "Dashboard" || inner.Name == "SearchBorder")) return;
+        if (FindAncestor<Border>(source, border => border.Name == "Dashboard" || border.Name == "SearchBorder" || border.Name == "StatusBorder") is not null) return;
         CloseOverlay();
         e.Handled = true;
     }
@@ -159,7 +168,9 @@ public partial class WinKeyOverlayWindow : Window
             Height = SystemParameters.PrimaryScreenHeight;
             return;
         }
-        GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, out var dpiX, out var _);
+        var dpiX = 96u;
+        if (GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, out dpiX, out _) != 0)
+            dpiX = 96;
         var scaleX = dpiX / 96.0;
         Left = info.Work.Left / scaleX;
         Top = info.Work.Top / scaleX;
@@ -186,7 +197,9 @@ public partial class WinKeyOverlayWindow : Window
             BringWindowToTop(target);
             var fgThread = GetWindowThreadProcessId(GetForegroundWindow(), out _);
             var targetThread = GetWindowThreadProcessId(target, out _);
-            var curThread = GetCurrentThreadId();
+            uint curThread;
+            try { curThread = GetCurrentThreadId(); }
+            catch (EntryPointNotFoundException) { curThread = GetWindowThreadProcessId(GetForegroundWindow(), out _); }
             if (fgThread != curThread) AttachThreadInput(curThread, fgThread, true);
             if (targetThread != curThread) AttachThreadInput(curThread, targetThread, true);
             SetForegroundWindow(target);
@@ -260,7 +273,8 @@ public partial class WinKeyOverlayWindow : Window
         }
         EmptyHint.Visibility = (WindowsSection.Visibility != Visibility.Visible && AppsSection.Visibility != Visibility.Visible)
             ? Visibility.Visible : Visibility.Collapsed;
-        Dispatcher.BeginInvoke(() => RefreshCaptures(), DispatcherPriority.Loaded);
+        _captureDebounce.Stop();
+        _captureDebounce.Start();
     }
 
     private void SearchBox_GotKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
@@ -293,7 +307,7 @@ public partial class WinKeyOverlayWindow : Window
         CloseOverlay();
         switch (button.Tag)
         {
-            case GameEntry game:
+            case GameEntry game when _shell.VisibleGames.Contains(game):
                 _shell.LaunchGame(game);
                 break;
             case AppEntry app:
@@ -319,6 +333,7 @@ public partial class WinKeyOverlayWindow : Window
 
     private void VolumeSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
+        if (!_overlayOpen || VolumeValueText is null) return;
         var percent = (int)Math.Round(Math.Clamp(e.NewValue, 0, 100));
         VolumeValueText.Text = percent.ToString();
         if (_volumeSliderSyncing) return;
@@ -345,10 +360,9 @@ public partial class WinKeyOverlayWindow : Window
 
     private void StoreClick(object sender, MouseButtonEventArgs e)
     {
-        var game = FeaturedStoreGame();
-        if (game is null) return;
-        CloseOverlay();
-        _shell.LaunchGame(game);
+        _suppressRestore = true;
+        CloseOverlay(false);
+        _shell.OpenGameStore();
     }
 
     private void NotificationClick(object sender, MouseButtonEventArgs e)
@@ -370,6 +384,79 @@ public partial class WinKeyOverlayWindow : Window
         catch { }
     }
 
+    private void RefreshStatusBar()
+    {
+        if (!_overlayOpen) return;
+        try
+        {
+            var now = DateTime.Now;
+            ClockText.Text = now.ToString("HH:mm");
+            DateText.Text = now.ToString("dddd, dd MMMM").ToUpperInvariant();
+            RefreshBattery();
+            if (_statusTick++ % 5 == 0) RefreshConnectivity();
+        }
+        catch { }
+    }
+
+    private void RefreshBattery()
+    {
+        var percent = PowerStatus.BatteryPercent();
+        if (PowerStatus.IsCharging())
+        {
+            BatteryFill.Width = percent is null ? 0 : 16d * percent.Value / 100d;
+            BatteryFill.Background = BatteryGreen;
+            ChargingIcon.Visibility = Visibility.Visible;
+            BatteryPercentText.Text = percent is null ? string.Empty : $"{percent.Value}%";
+            return;
+        }
+        ChargingIcon.Visibility = Visibility.Collapsed;
+        if (percent is null)
+        {
+            BatteryFill.Width = 0;
+            BatteryPercentText.Text = string.Empty;
+            return;
+        }
+        BatteryFill.Width = 16d * percent.Value / 100d;
+        BatteryFill.Background = percent > 50 ? BatteryGreen : percent > 20 ? BatteryYellow : BatteryRed;
+        BatteryPercentText.Text = $"{percent.Value}%";
+    }
+
+    private void RefreshConnectivity()
+    {
+        try
+        {
+            var available = NetworkInterface.GetIsNetworkAvailable();
+            if (available != _lastNetworkAvailable)
+            {
+                _lastNetworkAvailable = available;
+                WifiStatusIcon.Opacity = available ? 1 : 0.35;
+            }
+        }
+        catch { }
+        BluetoothStatusIcon.Opacity = MainWindow.IsBluetoothRadioAvailable() ? 1 : 0.35;
+    }
+
+    private void WifiButton_Click(object sender, RoutedEventArgs e)
+    {
+        _suppressRestore = true;
+        CloseOverlay(false);
+        _shell.ShowConnectionsFromOverlay(true);
+    }
+
+    private void BluetoothButton_Click(object sender, RoutedEventArgs e)
+    {
+        _suppressRestore = true;
+        CloseOverlay(false);
+        _shell.ShowConnectionsFromOverlay(false);
+    }
+
+    private static Brush CreateFrozenBrush(string color)
+    {
+        var brush = new SolidColorBrush((Color)ColorConverter.ConvertFromString(color));
+        brush.Freeze();
+        return brush;
+    }
+
     private void OnNotificationCenterUpdated()
     {
         if (_overlayOpen)
@@ -385,38 +472,33 @@ public partial class WinKeyOverlayWindow : Window
 
     private void RefreshStoreFeatured()
     {
-        var game = FeaturedStoreGame();
-        if (game is null)
+        var covers = _shell.VisibleGames
+            .Where(g => !g.IsHidden && !string.IsNullOrWhiteSpace(g.Cover) && File.Exists(g.Cover))
+            .Select(g => g.Cover!)
+            .ToList();
+        var cells = new[] { StoreCover1, StoreCover2, StoreCover3, StoreCover4, StoreCover5, StoreCover6 };
+        if (covers.Count == 0)
         {
-            StoreGameName.Text = "Nothing featured";
-            StoreGameDev.Text = string.Empty;
-            StoreArtInner.Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#10FFFFFF"));
+            foreach (var cell in cells)
+                cell.Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#241414"));
+            _storeCollagePool = null;
             return;
         }
-        StoreGameName.Text = game.Name;
-        StoreGameDev.Text = string.Join("  •  ", new[] { game.Developer, game.Publisher }
-            .Where(value => !string.IsNullOrWhiteSpace(value)));
-        var art = LoadLocalImage(game.Cover);
-        StoreArtInner.Background = art is not null
-            ? new ImageBrush(art)
-            : new SolidColorBrush((Color)ColorConverter.ConvertFromString("#10FFFFFF"));
+        if (_storeCollagePool is not null && _storeCollagePool.SequenceEqual(covers)) return;
+        _storeCollagePool = covers;
+        var pool = new List<string>(covers);
+        var random = new Random();
+        foreach (var cell in cells)
+        {
+            var chosen = pool[random.Next(pool.Count)];
+            var image = LoadLocalImage(chosen);
+            cell.Background = image is not null
+                ? new ImageBrush(image) { Stretch = Stretch.UniformToFill }
+                : new SolidColorBrush((Color)ColorConverter.ConvertFromString("#241414"));
+        }
     }
 
-    private GameEntry? FeaturedStoreGame()
-    {
-        var games = _shell.VisibleGames.Where(g => !g.IsHidden).ToList();
-        if (games.Count == 0) return null;
-        var favorite = games.FirstOrDefault(g => g.IsFavorite);
-        if (favorite is not null) return favorite;
-        var rated = games.FirstOrDefault(g => !string.IsNullOrWhiteSpace(g.Rating));
-        if (rated is not null) return rated;
-        var recentlyPlayed = games
-            .Where(g => g.LastPlayedUtc.HasValue)
-            .OrderByDescending(g => g.LastPlayedUtc)
-            .FirstOrDefault();
-        if (recentlyPlayed is not null) return recentlyPlayed;
-        return games[Math.Min(games.Count - 1, new Random().Next(games.Count))];
-    }
+    private List<string>? _storeCollagePool;
 
     private async Task RefreshMediaAsync()
     {
@@ -450,24 +532,44 @@ public partial class WinKeyOverlayWindow : Window
 
     private void UpdatePerfModeDisplay()
     {
-        PerfModeText.Text = (_shell.CurrentPerformanceMode ?? "Balanced").ToUpperInvariant();
+        var mode = (_shell.CurrentPerformanceMode ?? "Balanced").ToUpperInvariant();
+        PerfModeText.Text = mode;
+        var accentBrush = (Brush)FindResource("AccentBrush");
+        var defaultBrush = new SolidColorBrush(Color.FromArgb(0x18, 0xFF, 0xFF, 0xFF));
+        foreach (var btn in FindVisualChildren<Button>(this))
+        {
+            if (btn.Tag is string tag && tag is "Ultimate" or "Balanced" or "Eco")
+            {
+                var label = tag.ToUpperInvariant();
+                btn.Background = label == mode ? accentBrush : defaultBrush;
+            }
+        }
     }
 
     private static ImageSource? LoadLocalImage(string? path)
     {
         if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return null;
-        var image = new BitmapImage();
-        image.BeginInit();
-        image.CacheOption = BitmapCacheOption.OnLoad;
-        image.UriSource = new Uri(path, UriKind.Absolute);
-        image.EndInit();
-        image.Freeze();
-        return image;
+        if (_coverCache.TryGetValue(path, out var cached)) return cached;
+        try
+        {
+            var image = new BitmapImage();
+            image.BeginInit();
+            image.CacheOption = BitmapCacheOption.OnLoad;
+            image.CreateOptions = BitmapCreateOptions.None;
+            image.DecodePixelWidth = 256;
+            image.UriSource = new Uri(path, UriKind.Absolute);
+            image.EndInit();
+            image.Freeze();
+            _coverCache[path] = image;
+            return image;
+        }
+        catch { return null; }
     }
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, ImageSource> _coverCache = new();
 
     private void RefreshCaptures()
     {
-        var nonce = unchecked(DateTime.UtcNow.Ticks);
         foreach (var border in FindVisualChildren<Border>(WindowList)
                      .Where(b => b.Tag is TaskWindowEntry && b.IsVisible))
         {
@@ -494,7 +596,9 @@ public partial class WinKeyOverlayWindow : Window
         var foreground = GetForegroundWindow();
         var fgThread = GetWindowThreadProcessId(foreground, out _);
         var targetThread = GetWindowThreadProcessId(window.Handle, out _);
-        var curThread = GetCurrentThreadId();
+        uint curThread;
+        try { curThread = GetCurrentThreadId(); }
+        catch (EntryPointNotFoundException) { curThread = GetWindowThreadProcessId(foreground, out _); }
         try
         {
             if (fgThread != curThread) AttachThreadInput(curThread, fgThread, true);
@@ -509,14 +613,14 @@ public partial class WinKeyOverlayWindow : Window
         }
     }
 
-    private static bool IsTaskSwitcherWindow(IntPtr handle, IntPtr overlayHandle)
+    private static bool IsTaskSwitcherWindow(IntPtr handle)
     {
         bool minimized = IsIconic(handle);
         if (!IsWindowVisible(handle) && !minimized) return false;
         if (DwmGetWindowAttribute(handle, 14, out int cloaked, sizeof(int)) == 0 &&
             cloaked == 1 && !minimized) return false;
         var extendedStyle = GetWindowLong(handle, GWL_EXSTYLE);
-        if ((extendedStyle & WS_EX_TOOLWINDOW) != 0) return false;
+        if ((extendedStyle & (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)) != 0) return false;
         if (!GetWindowRect(handle, out var rectangle) || rectangle.Right - rectangle.Left < 100 ||
             rectangle.Bottom - rectangle.Top < 80) return false;
         var className = new System.Text.StringBuilder(256);
@@ -532,7 +636,7 @@ public partial class WinKeyOverlayWindow : Window
         EnumWindows((handle, _) =>
         {
             if (handle == overlayHandle || handle == shellHandle) return true;
-            if (!IsTaskSwitcherWindow(handle, overlayHandle)) return true;
+            if (!IsTaskSwitcherWindow(handle)) return true;
             var length = GetWindowTextLength(handle);
             if (length == 0) return true;
             var title = new System.Text.StringBuilder(length + 1);
@@ -563,6 +667,16 @@ public partial class WinKeyOverlayWindow : Window
         while (current is not null)
         {
             if (current is T match) return match;
+            current = VisualTreeHelper.GetParent(current);
+        }
+        return null;
+    }
+
+    private static T? FindAncestor<T>(DependencyObject? current, Func<T, bool> predicate) where T : DependencyObject
+    {
+        while (current is not null)
+        {
+            if (current is T match && predicate(match)) return match;
             current = VisualTreeHelper.GetParent(current);
         }
         return null;
@@ -613,7 +727,7 @@ public partial class WinKeyOverlayWindow : Window
     private static extern IntPtr SetFocus(IntPtr window);
     [DllImport("user32.dll")]
     private static extern bool AttachThreadInput(uint attachThread, uint attachToThread, bool attach);
-    [DllImport("user32.dll")]
+    [DllImport("kernel32.dll", EntryPoint = "GetCurrentThreadId", ExactSpelling = true)]
     private static extern uint GetCurrentThreadId();
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
@@ -657,6 +771,7 @@ public partial class WinKeyOverlayWindow : Window
     private const int SW_RESTORE = 9;
     private const int GWL_EXSTYLE = -20;
     private const int WS_EX_TOOLWINDOW = 0x00000080;
+    private const int WS_EX_NOACTIVATE = 0x08000000;
 
     #endregion
 }

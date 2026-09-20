@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Threading;
 
@@ -5,6 +6,30 @@ namespace OmenGamingShell;
 
 public partial class VolumeBrightnessOsd : Window
 {
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativePoint { public int X; public int Y; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRect { public int Left; public int Top; public int Right; public int Bottom; }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct MonitorInfo
+    {
+        public int Size;
+        public NativeRect Monitor;
+        public NativeRect WorkArea;
+        public uint Flags;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern bool GetCursorPos(out NativePoint point);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromPoint(NativePoint point, uint flags);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo info);
+
     private readonly DispatcherTimer _hideTimer = new() { Interval = TimeSpan.FromMilliseconds(1400) };
 
     public VolumeBrightnessOsd()
@@ -33,7 +58,17 @@ public partial class VolumeBrightnessOsd : Window
     private void PositionNearBottom()
     {
         var area = SystemParameters.WorkArea;
+        if (GetCursorPos(out var cursor))
+        {
+            var handle = MonitorFromPoint(cursor, 0x00000002 /* MONITOR_DEFAULTTONEAREST */);
+            var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+            if (handle != IntPtr.Zero && GetMonitorInfo(handle, ref info))
+            {
+                area = new Rect(info.WorkArea.Left, info.WorkArea.Top,
+                    info.WorkArea.Right - info.WorkArea.Left, info.WorkArea.Bottom - info.WorkArea.Top);
+            }
+        }
         Left = area.Left + (area.Width - Width) / 2;
-        Top = area.Top + area.Height - Height - 64;
+        Top = area.Top + (area.Height - Height) / 2;
     }
 }

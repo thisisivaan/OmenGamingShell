@@ -1,26 +1,83 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Text.Json;
+using System.Threading.Tasks;
 
 namespace OmenGamingShell;
 
 public static class InstalledAppsCatalog
 {
     private static readonly object Sync = new();
-    private static List<AppEntry>? _cache;
+    private static IReadOnlyList<AppEntry>? _cache;
     private static DateTime _lastRefreshUtc = DateTime.MinValue;
+    private static Task? _building;
+
+    private const int CacheMinutes = 30;
+    private static string CachePath => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "OmenGamingShell", "installed-apps-cache.json");
 
     public static IReadOnlyList<AppEntry> GetApps()
     {
         lock (Sync)
         {
-            if (_cache is not null && (DateTime.UtcNow - _lastRefreshUtc).TotalMinutes < 10)
-                return _cache;
-            _cache = Build();
-            _lastRefreshUtc = DateTime.UtcNow;
-            return _cache;
+            if (_cache is null)
+            {
+                _cache = LoadFromDisk();
+                if (_cache is not null) _lastRefreshUtc = DateTime.UtcNow;
+            }
+
+            var fresh = (DateTime.UtcNow - _lastRefreshUtc).TotalMinutes < CacheMinutes;
+            if (fresh || _building is not null)
+                return _cache ?? System.Array.Empty<AppEntry>();
+
+            _building = Task.Run(() =>
+            {
+                var apps = Build();
+                lock (Sync)
+                {
+                    _cache = apps;
+                    _lastRefreshUtc = DateTime.UtcNow;
+                    _building = null;
+                }
+                SaveToDisk(apps);
+            });
+            return _cache ?? System.Array.Empty<AppEntry>();
         }
     }
+
+    public static void WarmUp()
+    {
+        lock (Sync)
+        {
+            if (_building is not null) return;
+        }
+        _ = GetApps();
+    }
+
+    private static List<AppEntry>? LoadFromDisk()
+    {
+        try
+        {
+            if (!File.Exists(CachePath)) return null;
+            var raw = File.ReadAllText(CachePath);
+            return JsonSerializer.Deserialize<List<AppEntry>>(raw, JsonOptions)?.ToList();
+        }
+        catch { return null; }
+    }
+
+    private static void SaveToDisk(IReadOnlyList<AppEntry> apps)
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(CachePath)!);
+            File.WriteAllText(CachePath, JsonSerializer.Serialize(apps, JsonOptions));
+        }
+        catch { }
+    }
+
+    private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
     private static List<AppEntry> Build()
     {
@@ -45,7 +102,7 @@ public static class InstalledAppsCatalog
                 if (string.IsNullOrWhiteSpace(name) || IsUtility(name)) continue;
                 if (!seen.Add(name)) continue;
                 var target = Path.GetFullPath(shortcut);
-                apps.Add(new AppEntry { Name = name, Target = target, Icon = target });
+                apps.Add(new AppEntry { Name = name, Target = target, Icon = ExpandVariables(target) });
             }
         }
     }
@@ -55,7 +112,7 @@ public static class InstalledAppsCatalog
         try
         {
             var psi = new ProcessStartInfo("powershell",
-                "-NoProfile -NonInteractive -Command \"Get-StartApps | ForEach-Object { Write-Output ($_.AppID + '|' + $_.Name) }\"")
+                "-NoProfile -NonInteractive -Command \"Get-StartApps | ForEach-Object { Write-Output ($_.AppID + [char]9 + $_.Name) }\"")
             {
                 RedirectStandardOutput = true,
                 UseShellExecute = false,
@@ -67,7 +124,7 @@ public static class InstalledAppsCatalog
             process.WaitForExit(4000);
             foreach (var line in output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
             {
-                var separator = line.IndexOf('|');
+                var separator = line.IndexOf('\t');
                 if (separator <= 0) continue;
                 var appId = line[..separator].Trim();
                 var name = line[(separator + 1)..].Trim();
@@ -95,6 +152,12 @@ public static class InstalledAppsCatalog
             Environment.GetFolderPath(Environment.SpecialFolder.StartMenu)
         };
         return folders.Where(folder => !string.IsNullOrWhiteSpace(folder) && Directory.Exists(folder)).Distinct();
+    }
+
+    private static string ExpandVariables(string path)
+    {
+        try { return Environment.ExpandEnvironmentVariables(path); }
+        catch { return path; }
     }
 
     private static bool IsUtility(string name)

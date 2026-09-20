@@ -5,13 +5,21 @@ param(
     [string]$OutputDirectory = "$PSScriptRoot\..\build\installer-release"
 )
 
+# Builds the installer from THE app exe in the repo root.
+#
+# The app exe is not built here - build-app.ps1 does that, and this script calls it
+# first so the installer can never ship a stale exe. Staging only exists to create
+# the payload zip; the loose staged copy is deleted afterwards, leaving the
+# repo-root exe as the only copy of the app.
+
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$shellProject = Join-Path $repoRoot 'OmenGamingShell\OmenGamingShell.csproj'
+$buildAppScript = Join-Path $PSScriptRoot 'build-app.ps1'
+$appExe = Join-Path $repoRoot 'OmenGamingShell.exe'
+$appGames = Join-Path $repoRoot 'games.json'
 $installerProject = Join-Path $repoRoot 'OmenGamingShell.Installer\OmenGamingShell.Installer.csproj'
 $payloadFolder = Join-Path $repoRoot 'OmenGamingShell.Installer\Payload\app'
 $payloadZip = Join-Path $repoRoot 'OmenGamingShell.Installer\Payload\OmenGamingShell.zip'
-$staging = Join-Path ([System.IO.Path]::GetTempPath()) "omen-shell-payload-$([Guid]::NewGuid().ToString('N'))"
 
 function Invoke-DotNet {
     param([string[]]$Arguments)
@@ -19,17 +27,16 @@ function Invoke-DotNet {
     if ($LASTEXITCODE -ne 0) { throw "dotnet failed with exit code $LASTEXITCODE" }
 }
 
-try {
-    Write-Host 'Publishing Omen Gaming Shell (self-contained, single file)...'
-    Invoke-DotNet @('publish', $shellProject, '-c', $Configuration, '-r', $Runtime,
-        '--self-contained', 'true', '-p:PublishSingleFile=true',
-        '-p:IncludeNativeLibrariesForSelfExtract=true', '-o', $staging)
+Write-Host 'Refreshing the app exe in the main dir...'
+& $buildAppScript -DotNetPath $DotNetPath -Configuration $Configuration -Runtime $Runtime
+if (-not (Test-Path $appExe)) { throw "App exe missing after build: $appExe" }
 
-    Write-Host 'Refreshing installer payload...'
+try {
+    Write-Host 'Staging installer payload from the main-dir exe...'
     if (Test-Path $payloadFolder) { Remove-Item -LiteralPath $payloadFolder -Recurse -Force }
     New-Item -ItemType Directory -Path $payloadFolder | Out-Null
-    Copy-Item -LiteralPath (Join-Path $staging 'OmenGamingShell.exe') -Destination $payloadFolder
-    Copy-Item -LiteralPath (Join-Path $staging 'games.json') -Destination $payloadFolder
+    Copy-Item -LiteralPath $appExe -Destination $payloadFolder
+    Copy-Item -LiteralPath $appGames -Destination $payloadFolder
     if (Test-Path $payloadZip) { Remove-Item -LiteralPath $payloadZip -Force }
     Compress-Archive -Path "$payloadFolder\*" -DestinationPath $payloadZip -CompressionLevel Optimal
 
@@ -43,5 +50,8 @@ try {
     Write-Host "Installer ready: $setupExe"
 }
 finally {
-    if (Test-Path $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
+    # The payload is embedded into the installer at build time, so the staged copy is
+    # removed straight away. The zip stays: the installer project embeds it by path,
+    # and it is an archive, not a second loose exe.
+    if (Test-Path $payloadFolder) { Remove-Item -LiteralPath $payloadFolder -Recurse -Force }
 }
