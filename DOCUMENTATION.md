@@ -21,7 +21,7 @@ Built in C# / WPF (.NET 8), Omen Gaming Shell gives you a controller-navigable g
 11. [Notifications](#11-notifications)
 12. [Game Store (IGDB)](#12-game-store-igdb)
 13. [Download Center](#13-download-center)
-14. [FitGirl Repack System](#14-fitgirl-repack-system)
+14. [Repack Download System](#14-repack-download-system)
 15. [Screenshots and Captures](#15-screenshots-and-captures)
 16. [Clipboard History](#16-clipboard-history)
 17. [Backup Settings](#17-backup-settings)
@@ -76,7 +76,7 @@ Built in C# / WPF (.NET 8), Omen Gaming Shell gives you a controller-navigable g
 | **Card** | `#121212` | Download items, list rows |
 | **Card Hover** | `#1AFFFFFF` | Hover states on filter buttons |
 | **Accent** | `#FF003C` | Progress bars, selection highlights, primary action |
-| **Accent Purple** | `#9B6BFF` | Game store, download center, FitGirl actions |
+| **Accent Purple** | `#9B6BFF` | Game store, download center, repack actions |
 | **Success** | `#24C486` | Installed/completed states |
 | **Warning** | `#E8B83C` | Downloading state indicator |
 | **Error** | `#FF4444` | Failed states |
@@ -519,21 +519,21 @@ Accessed via gear icon (top-right of download center header).
 
 ---
 
-## 14. FitGirl Repack System
+## 14. Repack Download System
 
-Integrated search and download of FitGirl repacks.
+Integrated search and download of game repacks from community repack sites.
 
 ### Search Flow
 
 1. User types game name in the store search bar.
-2. `FitGirlScrapingService.SearchAsync` queries `fitgirl-repacks.site/?s={query}`.
+2. Scrapes a community repack site for matching game posts.
 3. HTML parsed with `AngleSharp` library, extracts article titles and URLs.
 4. `FuzzySharp.WeightedRatio` scores each result against the query (70%+ threshold).
 5. Best match returned. Up to 3 retry attempts with Cloudflare detection.
 
 ### Download Flow
 
-1. `FitGirlScrapingService.ExtractMagnetLinkAsync` scrapes the post page for magnet links.
+1. Scrapes the matched post page for magnet links.
 2. Extracts additional tracker URLs from page HTML and appends them to the magnet URI.
 3. `TrackerList.AppendTo` adds well-known public trackers as fallback.
 4. `DownloadCenterService.StartDownloadAsync` initiates the torrent.
@@ -909,7 +909,7 @@ All stores persist JSON to `%LocalAppData%\OmenGamingShell\`.
 | `SystemAudio.cs` | Volume control via Core Audio API |
 | `ScreenshotService.cs` | Screenshot scanning from standard paths |
 | `GameStoreSearchService.cs` | IGDB API search with OAuth |
-| `FitGirlScrapingService.cs` | FitGirl repack scraping with fuzzy matching |
+| `FitGirlScrapingService.cs` | Repack site search and magnet link extraction |
 | `TorrentDownloadService.cs` | csdl/libtorrent wrapper with speed tuning |
 | `DownloadCenterService.cs` | Download state management, progress, auto-resume, watchdog |
 | `TrackerList.cs` | Fallback tracker list for torrents |
