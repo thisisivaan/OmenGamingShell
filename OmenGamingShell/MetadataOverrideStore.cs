@@ -30,6 +30,16 @@ public static class MetadataOverrideStore
         game.HasMetadataOverride = true;
     }
 
+    // Removes the metadata override for a game (used on uninstall).
+    public static void Remove(GameEntry game)
+    {
+        var overrides = Load();
+        if (!overrides.Remove(Key(game))) return;
+        Directory.CreateDirectory(Path.GetDirectoryName(PathName)!);
+        File.WriteAllText(PathName, JsonSerializer.Serialize(overrides, Options));
+        game.HasMetadataOverride = false;
+    }
+
     private static Dictionary<string, OverrideData> Load()
     {
         try

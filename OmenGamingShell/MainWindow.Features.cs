@@ -261,7 +261,12 @@ public partial class MainWindow
             if (string.Equals(n.Tag, UpdateNotificationTag, StringComparison.Ordinal))
             {
                 item.Cursor = Cursors.Hand;
-                item.MouseLeftButtonUp += (_, _) => OpenUpdateFromNotificationAsync();
+                var handler = new MouseButtonEventHandler((_, e) =>
+                {
+                    if (e.OriginalSource is System.Windows.Controls.Button) return;
+                    OpenUpdateFromNotificationAsync();
+                });
+                item.AddHandler(UIElement.MouseLeftButtonDownEvent, handler, true);
             }
             NotificationsList.Children.Add(item);
         }
@@ -405,6 +410,13 @@ public partial class MainWindow
 
     private void ContinueHost_FocusWithinChanged(object sender, DependencyPropertyChangedEventArgs e)
     {
+        // The GAME STORE card draws its selection ring only when focus arrived via
+        // controller/keyboard navigation, never after closing an overlay with the mouse.
+        var focused = ContinueHost.IsKeyboardFocusWithin && _nonMouseNavigation;
+        ContinueHost.BorderBrush = focused
+            ? new SolidColorBrush(Color.FromArgb(0xFF, 0xFF, 0x00, 0x3C))
+            : new SolidColorBrush(Color.FromArgb(0x12, 0xFF, 0xFF, 0xFF));
+        ContinueHost.BorderThickness = focused ? new Thickness(1.5) : new Thickness(1);
     }
 
     private void AlbumArt_Click(object sender, MouseButtonEventArgs e) => OpenMediaApp();

@@ -39,6 +39,20 @@ public static class PlayHistoryStore
         }
     }
 
+    // Removes the tracked play history entry for a game (used on uninstall).
+    public static void Remove(GameEntry game)
+    {
+        lock (Sync)
+        {
+            var history = Load();
+            if (!history.Remove(Key(game))) return;
+            Directory.CreateDirectory(Path.GetDirectoryName(PathName)!);
+            File.WriteAllText(PathName, JsonSerializer.Serialize(history, Options));
+            game.TotalPlayTimeSeconds = 0;
+            game.LastPlayedUtc = null;
+        }
+    }
+
     private static Dictionary<string, PlayHistory> Load()
     {
         try

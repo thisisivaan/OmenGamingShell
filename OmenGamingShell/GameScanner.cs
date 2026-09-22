@@ -381,16 +381,39 @@ public static partial class GameScanner
 
     private static string GetExecutableGameName(string executable, string fallback)
     {
+        var folderName = CleanGameName(fallback);
         try
         {
             var productName = FileVersionInfo.GetVersionInfo(executable).ProductName?.Trim();
             if (!string.IsNullOrWhiteSpace(productName) && productName.Length >= 3 &&
                 !new[] { "unity player", "unreal engine", "game", "launcher" }
                     .Contains(productName.ToLowerInvariant(), StringComparer.Ordinal))
-                return CleanGameName(productName);
+                return ChooseDisplayName(CleanGameName(productName), folderName);
         }
         catch { }
-        return CleanGameName(fallback);
+        return folderName;
+    }
+
+    private static string ChooseDisplayName(string product, string folder)
+    {
+        if (string.Equals(product, folder, StringComparison.OrdinalIgnoreCase)) return folder;
+        var productWords = WordCount(product);
+        var folderWords = WordCount(folder);
+        if (folderWords > productWords) return folder;
+        if (productWords > folderWords) return product;
+        return product.Length > folder.Length ? product : folder;
+    }
+
+    private static int WordCount(string value)
+    {
+        var count = 0;
+        var inWord = false;
+        foreach (var character in value)
+        {
+            if (char.IsWhiteSpace(character) || character is '-' or ':' or '_') { inWord = false; continue; }
+            if (!inWord) { count++; inWord = true; }
+        }
+        return count;
     }
 
     private static string NormalizeName(string name) =>

@@ -380,10 +380,6 @@
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter Property="Opacity" Value="0.85" />
                             </Trigger>
-                            <Trigger Property="IsFocused" Value="True">
-                                <Setter Property="BorderBrush" Value="#669B6BFF" />
-                                <Setter Property="BorderThickness" Value="1.5" />
-                            </Trigger>
                         </Style.Triggers>
                     </Style>
                 </Border.Style>
@@ -791,6 +787,11 @@
                                                   Header="{Binding PlacementTarget.Tag.HiddenActionLabel, RelativeSource={RelativeSource AncestorType={x:Type ContextMenu}}}"
                                                   Tag="{Binding PlacementTarget.Tag, RelativeSource={RelativeSource AncestorType={x:Type ContextMenu}}}"
                                                   Click="GameHiddenContext_Click" />
+                                        <MenuItem Style="{StaticResource GameTileContextMenuItem}"
+                                                  Header="{Binding PlacementTarget.Tag.UninstallActionLabel, RelativeSource={RelativeSource AncestorType={x:Type ContextMenu}}}"
+                                                  Tag="{Binding PlacementTarget.Tag, RelativeSource={RelativeSource AncestorType={x:Type ContextMenu}}}"
+                                                  Visibility="{Binding PlacementTarget.Tag.CanUninstall, RelativeSource={RelativeSource AncestorType={x:Type ContextMenu}}, Converter={StaticResource BoolToVisConverter}}"
+                                                  Click="GameUninstallContext_Click" />
                                     </ContextMenu>
                                 </Button.ContextMenu>
                                 <Grid Width="225" Height="300">
@@ -1172,7 +1173,7 @@
                                 </StackPanel>
                             </UniformGrid>
                             <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,24,0,0">
-                                <Button x:Name="LaunchDetailsButton" Style="{StaticResource PrimaryActionButton}"
+                                <Button x:Name="LaunchDetailsButton" Style="{StaticResource ContextActionButton}"
                                         Content="LAUNCH GAME" Width="180" Height="50" Click="LaunchDetails_Click" />
                             </StackPanel>
                         </StackPanel>
@@ -1266,6 +1267,7 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
 
@@ -1321,8 +1323,13 @@
                         </Grid>
                     </Border>
 
+                    <!-- Search status -->
+                    <TextBlock x:Name="StoreSearchStatus" Grid.Row="2" Margin="24,12,24,0"
+                               FontSize="11" Foreground="#707070" HorizontalAlignment="Center"
+                               TextTrimming="CharacterEllipsis" />
+
                     <!-- Search results -->
-                    <Grid Grid.Row="2" Margin="24,16,24,24">
+                    <Grid Grid.Row="3" Margin="24,16,24,24">
                         <ScrollViewer VerticalScrollBarVisibility="Auto">
                             <ItemsControl x:Name="StoreGamesGrid" Focusable="False">
                                 <ItemsControl.ItemsPanel>
@@ -1361,49 +1368,100 @@
                                                         <TextBlock Text="{Binding Rating}" FontSize="9" Foreground="#9B6BFF"
                                                                    Margin="8,0,0,0" />
                                                     </StackPanel>
+                                                    <!-- Live download/install progress: a thin bar + activity status,
+                                                         shown only while the game is downloading or installing. -->
+                                                    <StackPanel Margin="0,8,0,0"
+                                                                Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisConverter}}">
+                                                        <Grid Height="4" ClipToBounds="True">
+                                                            <Border Background="#20FFFFFF" CornerRadius="2" />
+                                                            <Border CornerRadius="2" Background="#E8B83C"
+                                                                    HorizontalAlignment="Left" Width="{Binding ProgressWidth}" />
+                                                        </Grid>
+                                                        <TextBlock Text="{Binding ActivityText}" FontSize="9" Foreground="#909090"
+                                                                   TextTrimming="CharacterEllipsis" Margin="0,4,0,0" />
+                                                    </StackPanel>
                                                 </StackPanel>
-                                                <!-- Action circle - always visible -->
-                                                <Border x:Name="ActionCircle" Grid.Column="2" Width="36" Height="36"
-                                                        CornerRadius="18" VerticalAlignment="Center" Margin="8,0,0,0"
+                                                <!-- Action icon - always visible circle; a ring around it appears on
+                                                     hover (ring sits on top with a transparent hit area, so the whole
+                                                     button is hover-aware). On red/yellow rows the whole area is
+                                                     clickable; on green (installed) rows it is inert. -->
+                                                <Border x:Name="ActionHover" Grid.Column="2" Width="44" Height="44"
+                                                        VerticalAlignment="Center" Margin="2,0,0,0"
                                                         Cursor="Hand" MouseLeftButtonDown="StoreResultAction_Click"
-                                                        Tag="{Binding}" Background="#18FF003C">
-                                                    <Border.Style>
-                                                        <Style TargetType="Border">
-                                                            <Setter Property="Background" Value="#18FF003C" />
-                                                            <Style.Triggers>
-                                                                <Trigger Property="IsMouseOver" Value="True">
-                                                                    <Setter Property="Background" Value="#44FF003C" />
-                                                                </Trigger>
-                                                            </Style.Triggers>
-                                                        </Style>
-                                                    </Border.Style>
-                                                    <Grid>
-                                                        <TextBlock x:Name="ActionIcon" Text="&#xE896;" FontFamily="Segoe Fluent Icons"
-                                                                   FontSize="15" Foreground="#FF003C"
-                                                                   HorizontalAlignment="Center" VerticalAlignment="Center" />
-                                                        <TextBlock x:Name="DownloadSpinIcon" Text="&#xE895;" FontFamily="Segoe Fluent Icons"
-                                                                   FontSize="15" Foreground="#E8B83C" Visibility="Collapsed"
-                                                                   HorizontalAlignment="Center" VerticalAlignment="Center"
-                                                                   RenderTransformOrigin="0.5,0.5">
-                                                            <TextBlock.RenderTransform>
-                                                                <RotateTransform Angle="0" />
-                                                            </TextBlock.RenderTransform>
-                                                            <TextBlock.Triggers>
-                                                                <EventTrigger RoutedEvent="TextBlock.Loaded">
-                                                                    <BeginStoryboard>
-                                                                        <Storyboard RepeatBehavior="Forever">
-                                                                            <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(RotateTransform.Angle)"
-                                                                                             From="0" To="360" Duration="0:0:1" />
-                                                                        </Storyboard>
-                                                                    </BeginStoryboard>
-                                                                </EventTrigger>
-                                                            </TextBlock.Triggers>
-                                                        </TextBlock>
+                                                        Tag="{Binding}">
+                                                    <Grid Width="44" Height="44">
+                                                        <!-- Inner circle + glyph, always visible -->
+                                                        <Border x:Name="ActionCircle" Width="36" Height="36"
+                                                                CornerRadius="18" VerticalAlignment="Center"
+                                                                Background="#18FF003C">
+                                                            <Grid>
+                                                                <TextBlock x:Name="ActionIcon" Text="&#xE896;" FontFamily="Segoe Fluent Icons"
+                                                                           FontSize="15" Foreground="#FF003C"
+                                                                           HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                                                <TextBlock x:Name="DownloadSpinIcon" Text="&#xE895;" FontFamily="Segoe Fluent Icons"
+                                                                           FontSize="15" Foreground="#E8B83C" Visibility="Collapsed"
+                                                                           HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                                           RenderTransformOrigin="0.5,0.5">
+                                                                    <TextBlock.RenderTransform>
+                                                                        <RotateTransform Angle="0" />
+                                                                    </TextBlock.RenderTransform>
+                                                                    <TextBlock.Triggers>
+                                                                        <EventTrigger RoutedEvent="TextBlock.Loaded">
+                                                                            <BeginStoryboard>
+                                                                                <Storyboard RepeatBehavior="Forever">
+                                                                                    <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(RotateTransform.Angle)"
+                                                                                                     From="0" To="360" Duration="0:0:1" />
+                                                                                </Storyboard>
+                                                                            </BeginStoryboard>
+                                                                        </EventTrigger>
+                                                                    </TextBlock.Triggers>
+                                                                </TextBlock>
+                                                            </Grid>
+                                                        </Border>
+                                                        <!-- Hover ring: transparent hit area over the circle, fades in on hover -->
+                                                        <Border x:Name="ActionRing" CornerRadius="22" BorderThickness="2"
+                                                                Background="Transparent" BorderBrush="#70FF003C" Opacity="0">
+                                                            <Border.Style>
+                                                                <Style TargetType="Border">
+                                                                    <Setter Property="BorderBrush" Value="#70FF003C" />
+                                                                    <Style.Triggers>
+                                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                                            <Setter Property="Opacity" Value="1" />
+                                                                            <Setter Property="Background" Value="#14FF003C" />
+                                                                        </Trigger>
+                                                                        <DataTrigger Binding="{Binding HasLocalRepack}" Value="True">
+                                                                            <Setter Property="BorderBrush" Value="#70E8B83C" />
+                                                                            <Setter Property="Background" Value="#14E8B83C" />
+                                                                        </DataTrigger>
+                                                                        <DataTrigger Binding="{Binding IsInstalled}" Value="True">
+                                                                            <Setter Property="Opacity" Value="0" />
+                                                                        </DataTrigger>
+                                                                        <DataTrigger Binding="{Binding IsFitGirlAvailable}" Value="False">
+                                                                            <Setter Property="Opacity" Value="0" />
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </Border.Style>
+                                                        </Border>
                                                     </Grid>
                                                 </Border>
                                             </Grid>
                                         </Border>
                                         <DataTemplate.Triggers>
+                                            <!-- Local repack on disk, never installed: yellow container.
+                                                 Clicking it opens the game-info page (no install icon). -->
+                                            <DataTrigger Binding="{Binding HasLocalRepack}" Value="True">
+                                                <Setter TargetName="RowBorder" Property="Background" Value="#14E8B83C" />
+                                                <Setter TargetName="ActionIcon" Property="Foreground" Value="#E8B83C" />
+                                                <Setter TargetName="ActionCircle" Property="Background" Value="#18E8B83C" />
+                                            </DataTrigger>
+                                            <!-- No FitGirl repack: greyed out, not clickable -->
+                                            <DataTrigger Binding="{Binding IsFitGirlAvailable}" Value="False">
+                                                <Setter TargetName="RowBorder" Property="Background" Value="#0D0D0D" />
+                                                <Setter TargetName="RowBorder" Property="Opacity" Value="0.45" />
+                                                <Setter TargetName="RowBorder" Property="Cursor" Value="Arrow" />
+                                                <Setter TargetName="ActionHover" Property="Visibility" Value="Collapsed" />
+                                            </DataTrigger>
                                             <!-- Downloading: yellow spin -->
                                             <DataTrigger Binding="{Binding IsDownloading}" Value="True">
                                                 <Setter TargetName="ActionIcon" Property="Visibility" Value="Collapsed" />
@@ -1411,12 +1469,23 @@
                                                 <Setter TargetName="ActionCircle" Property="Background" Value="#22E8B83C" />
                                                 <Setter TargetName="RowBorder" Property="Background" Value="#10E8B83C" />
                                             </DataTrigger>
-                                            <!-- Installed: green row + check -->
+                                            <!-- Installing: same yellow spin so the card reads as busy while
+                                                 silent setup extracts. -->
+                                            <DataTrigger Binding="{Binding IsInstalling}" Value="True">
+                                                <Setter TargetName="ActionIcon" Property="Visibility" Value="Collapsed" />
+                                                <Setter TargetName="DownloadSpinIcon" Property="Visibility" Value="Visible" />
+                                                <Setter TargetName="ActionCircle" Property="Background" Value="#22E8B83C" />
+                                                <Setter TargetName="RowBorder" Property="Background" Value="#10E8B83C" />
+                                            </DataTrigger>
+                                            <!-- Installed: green row + check. The icon is informational only:
+                                                 no hover ring, no Hand cursor, clicks are swallowed. -->
                                             <DataTrigger Binding="{Binding IsInstalled}" Value="True">
                                                 <Setter TargetName="RowBorder" Property="Background" Value="#1224C486" />
                                                 <Setter TargetName="ActionIcon" Property="Text" Value="&#xE73E;" />
                                                 <Setter TargetName="ActionIcon" Property="Foreground" Value="#24C486" />
                                                 <Setter TargetName="ActionCircle" Property="Background" Value="#1824C486" />
+                                                <Setter TargetName="ActionHover" Property="Cursor" Value="Arrow" />
+                                                <Setter TargetName="ActionHover" Property="Visibility" Value="Visible" />
                                             </DataTrigger>
                                         </DataTemplate.Triggers>
                                     </DataTemplate>
@@ -1428,6 +1497,12 @@
                     </Grid>
                 </Grid>
             </Border>
+
+            <!-- Free space on the drive hosting the download folder, pinned to the
+                 bottom-left of the store overlay. -->
+            <TextBlock x:Name="StoreFreeSpaceText" Text="" FontFamily="Segoe UI Variable Display"
+                       FontSize="11" Foreground="#FF4444" HorizontalAlignment="Left" VerticalAlignment="Bottom"
+                       Margin="20,0,0,14" />
         </Grid>
 
         <!-- Download Center overlay -->
@@ -1479,35 +1554,88 @@
                                 </ItemsControl.ItemsPanel>
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
-                                        <Border Background="#121212" CornerRadius="10" Padding="14,12" Margin="0,0,0,8">
+                                        <Border x:Name="RowBody" Background="#121212" CornerRadius="10" Padding="14,12" Margin="0,0,0,8"
+                                                MouseLeftButtonDown="DownloadRow_MouseLeftButtonDown">
                                             <Grid>
                                                 <Grid.RowDefinitions>
                                                     <RowDefinition Height="Auto" />
                                                     <RowDefinition Height="Auto" />
                                                     <RowDefinition Height="Auto" />
                                                 </Grid.RowDefinitions>
+                                                <!-- Header row - same layout as a store card: cover, title + meta, status circle -->
                                                 <Grid Grid.Row="0">
                                                     <Grid.ColumnDefinitions>
-                                                        <ColumnDefinition Width="50" />
+                                                        <ColumnDefinition Width="Auto" />
                                                         <ColumnDefinition Width="*" />
                                                         <ColumnDefinition Width="Auto" />
                                                     </Grid.ColumnDefinitions>
                                                     <Border Grid.Column="0" Width="50" Height="68" CornerRadius="6" ClipToBounds="True"
-                                                            Background="#1AFFFFFF" VerticalAlignment="Top">
-                                                        <Image Source="{Binding CoverUrl}" Stretch="UniformToFill" />
+                                                            Margin="0,0,12,0" Background="#1AFFFFFF">
+                                                        <Image Source="{Binding CoverUrl}" Stretch="UniformToFill"
+                                                               RenderOptions.BitmapScalingMode="HighQuality" />
                                                     </Border>
-                                                    <StackPanel Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Center">
+                                                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
                                                         <TextBlock Text="{Binding Name}" FontSize="13" FontWeight="SemiBold" Foreground="White"
                                                                    TextTrimming="CharacterEllipsis" />
                                                         <TextBlock Text="{Binding StatusText}" FontSize="10" Foreground="#909090"
-                                                                   Margin="0,4,0,0" />
-                                                        <TextBlock Text="{Binding SizeText}" FontSize="9" Foreground="#606060"
-                                                                   Margin="0,2,0,0" />
+                                                                   TextTrimming="CharacterEllipsis" Margin="0,2,0,0" />
+                                                        <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                                                            <TextBlock Text="{Binding ProgressText}" FontSize="9" Foreground="#707070" />
+                                                            <TextBlock Text="{Binding SizeText}" FontSize="9" Foreground="#606060"
+                                                                       Margin="8,0,0,0" />
+                                                        </StackPanel>
                                                     </StackPanel>
-                                                    <TextBlock Grid.Column="2" Text="{Binding StatusIcon}" FontFamily="Segoe Fluent Icons"
-                                                               FontSize="18" VerticalAlignment="Center" Foreground="{Binding StatusColor}" />
+                                                    <!-- Status circle - visually consistent with the store action circle -->
+                                                    <Grid Grid.Column="2" Width="44" Height="44" VerticalAlignment="Center" Margin="2,0,0,0">
+                                                        <Border x:Name="DlStatusCircle" Width="36" Height="36"
+                                                                CornerRadius="18" VerticalAlignment="Center"
+                                                                Background="#18E8B83C">
+                                                            <Grid>
+                                                                <TextBlock x:Name="DlStatusIcon" Text="{Binding StatusIcon}"
+                                                                           FontFamily="Segoe Fluent Icons" FontSize="15"
+                                                                           Foreground="{Binding StatusColor}"
+                                                                           HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                                                <TextBlock x:Name="DlSpinIcon" Text="&#xE895;" FontFamily="Segoe Fluent Icons"
+                                                                           FontSize="15" Foreground="#E8B83C" Visibility="Collapsed"
+                                                                           HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                                           RenderTransformOrigin="0.5,0.5">
+                                                                    <TextBlock.RenderTransform>
+                                                                        <RotateTransform Angle="0" />
+                                                                    </TextBlock.RenderTransform>
+                                                                    <TextBlock.Triggers>
+                                                                        <EventTrigger RoutedEvent="TextBlock.Loaded">
+                                                                            <BeginStoryboard>
+                                                                                <Storyboard RepeatBehavior="Forever">
+                                                                                    <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(RotateTransform.Angle)"
+                                                                                                     From="0" To="360" Duration="0:0:1" />
+                                                                                </Storyboard>
+                                                                            </BeginStoryboard>
+                                                                        </EventTrigger>
+                                                                    </TextBlock.Triggers>
+                                                                </TextBlock>
+                                                            </Grid>
+                                                        </Border>
+                                                        <!-- Hover ring over the status circle, mirrors the store card -->
+                                                        <Border x:Name="DlStatusRing" CornerRadius="22" BorderThickness="2"
+                                                                Background="Transparent" BorderBrush="#70E8B83C" Opacity="0"
+                                                                Cursor="Hand" MouseLeftButtonDown="DownloadRow_MouseLeftButtonDown"
+                                                                Tag="{Binding}">
+                                                            <Border.Style>
+                                                                <Style TargetType="Border">
+                                                                    <Setter Property="BorderBrush" Value="#70E8B83C" />
+                                                                    <Style.Triggers>
+                                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                                            <Setter Property="Opacity" Value="1" />
+                                                                            <Setter Property="Background" Value="#14E8B83C" />
+                                                                        </Trigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </Border.Style>
+                                                        </Border>
+                                                    </Grid>
                                                 </Grid>
-                                                <Grid Grid.Row="1" Margin="0,8,0,0">
+                                                <!-- Progress bar -->
+                                                <Grid Grid.Row="1" Margin="62,10,0,0">
                                                     <Grid.ColumnDefinitions>
                                                         <ColumnDefinition Width="*" />
                                                         <ColumnDefinition Width="Auto" />
@@ -1517,11 +1645,11 @@
                                                         <Border CornerRadius="2" Background="#FF003C"
                                                                 HorizontalAlignment="Left" Width="{Binding ProgressWidth}" />
                                                     </Grid>
-                                                    <TextBlock Grid.Column="1" Text="{Binding ProgressText}" FontSize="9"
-                                                               Foreground="#707070" VerticalAlignment="Center" Margin="8,0,0,0" />
                                                 </Grid>
-                                                <Grid Grid.Row="2" Margin="0,8,0,0" HorizontalAlignment="Right">
+                                                <!-- Controls -->
+                                                <Grid Grid.Row="2" Margin="62,8,0,0" HorizontalAlignment="Right">
                                                     <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="Auto" />
                                                         <ColumnDefinition Width="Auto" />
                                                         <ColumnDefinition Width="Auto" />
                                                         <ColumnDefinition Width="Auto" />
@@ -1543,13 +1671,43 @@
                                                         <TextBlock Text="&#xE711;" FontFamily="Segoe Fluent Icons" FontSize="11" />
                                                     </Button>
                                                     <Button Grid.Column="3" Style="{StaticResource LibraryFilterButton}" Width="28" Height="26"
-                                                            Padding="0" Tag="{Binding}" ToolTip="Open download folder"
+                                                            Padding="0" Margin="0,0,0,0" Tag="{Binding}" ToolTip="Open download folder"
                                                             Click="OpenDownloadFolder_Click" Visibility="{Binding CanOpenFolder, Converter={StaticResource BoolToVisConverter}}">
                                                         <TextBlock Text="&#xE838;" FontFamily="Segoe Fluent Icons" FontSize="11" />
+                                                    </Button>
+                                                    <Button Grid.Column="4" Style="{StaticResource LibraryFilterButton}" Width="28" Height="26"
+                                                            Padding="0" Margin="4,0,0,0" Tag="{Binding}" ToolTip="Run installer"
+                                                            Click="DownloadInstall_Click" Visibility="{Binding CanInstall, Converter={StaticResource BoolToVisConverter}}">
+                                                        <TextBlock Text="&#xE96E;" FontFamily="Segoe Fluent Icons" FontSize="11" />
                                                     </Button>
                                                 </Grid>
                                             </Grid>
                                         </Border>
+                                        <DataTemplate.Triggers>
+                                            <!-- Downloading: spinning icon like the store's active download -->
+                                            <DataTrigger Binding="{Binding CanPause}" Value="True">
+                                                <Setter TargetName="DlStatusIcon" Property="Visibility" Value="Collapsed" />
+                                                <Setter TargetName="DlSpinIcon" Property="Visibility" Value="Visible" />
+                                                <Setter TargetName="DlStatusCircle" Property="Background" Value="#22E8B83C" />
+                                            </DataTrigger>
+                                            <!-- Installing: same spinning icon so the row feels alive while
+                                                 setup.exe extracts. Ring stays visible for hover/click. -->
+                                            <DataTrigger Binding="{Binding IsInstalling}" Value="True">
+                                                <Setter TargetName="DlStatusIcon" Property="Visibility" Value="Collapsed" />
+                                                <Setter TargetName="DlSpinIcon" Property="Visibility" Value="Visible" />
+                                                <Setter TargetName="DlStatusCircle" Property="Background" Value="#22E8B83C" />
+                                            </DataTrigger>
+                                            <!-- Detected repack waiting to be installed: yellow container,
+                                                 whole row launches the repack setup directly -->
+                                            <DataTrigger Binding="{Binding IsDetectedRepack}" Value="True">
+                                                <Setter TargetName="RowBody" Property="Background" Value="#14E8B83C" />
+                                                <Setter TargetName="RowBody" Property="Cursor" Value="Hand" />
+                                            </DataTrigger>
+                                            <!-- Completed: green status circle like the store's installed state -->
+                                            <DataTrigger Binding="{Binding CanInstall}" Value="True">
+                                                <Setter TargetName="DlStatusCircle" Property="Background" Value="#1824C486" />
+                                            </DataTrigger>
+                                        </DataTemplate.Triggers>
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
@@ -1905,8 +2063,8 @@
 
 <!-- Update Available Banner (macOS-style, top-right, persistent) -->
 <Border x:Name="UpdateBanner" Grid.Row="1" Grid.RowSpan="2" HorizontalAlignment="Right" VerticalAlignment="Top"
-        Margin="0,8,48,0" Width="400" Padding="16" Panel.ZIndex="40"
-        Visibility="Collapsed">
+        Margin="0,8,48,0" Width="400" Padding="16" Panel.ZIndex="40" Cursor="Hand"
+        Visibility="Collapsed" MouseLeftButtonDown="UpdateBanner_MouseLeftButtonDown">
   <Border.Effect>
     <DropShadowEffect ShadowDepth="10" BlurRadius="22" Opacity="0.55" Color="#000000" />
   </Border.Effect>
@@ -2034,6 +2192,27 @@
         </StackPanel>
       </Grid>
     </Grid>
+  </Border>
+</Grid>
+
+<!-- Uninstall confirmation overlay -->
+<Grid x:Name="UninstallConfirmOverlay" Grid.RowSpan="3" Margin="-52,-34" Background="#E9000000"
+      KeyboardNavigation.TabNavigation="Cycle" KeyboardNavigation.DirectionalNavigation="Cycle"
+      Visibility="Collapsed" MouseDown="DismissibleOverlay_MouseDown" Panel.ZIndex="110">
+  <Border Width="520" Background="#0D0D0D" CornerRadius="14" Padding="30"
+          HorizontalAlignment="Center" VerticalAlignment="Center" MouseDown="OverlayContent_MouseDown">
+    <StackPanel>
+      <TextBlock x:Name="UninstallConfirmTitle" Text="UNINSTALL GAME" FontFamily="Segoe UI Variable Display" FontSize="22"
+                 FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,0,0,8" />
+      <TextBlock x:Name="UninstallConfirmGameName" FontSize="17" FontWeight="SemiBold" HorizontalAlignment="Center"
+                 Margin="0,0,0,14" TextAlignment="Center" TextWrapping="Wrap" />
+      <TextBlock x:Name="UninstallConfirmText" FontSize="13" Foreground="#B0B0B0" HorizontalAlignment="Center"
+                 TextAlignment="Center" TextWrapping="Wrap" LineHeight="20" />
+      <TextBlock x:Name="UninstallConfirmFolder" FontSize="11" Foreground="#707070" HorizontalAlignment="Center"
+                 TextAlignment="Center" TextWrapping="Wrap" Margin="0,10,0,0" />
+      <Button Content="UNINSTALL" Height="50" Margin="0,24,0,10" Click="ConfirmUninstall_Click" />
+      <Button Content="CANCEL" Height="46" Background="Transparent" Click="CancelUninstall_Click" />
+    </StackPanel>
   </Border>
 </Grid>
 </Grid>

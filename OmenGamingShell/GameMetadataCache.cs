@@ -20,6 +20,7 @@ public static class GameMetadataCache
         foreach (var game in games)
         {
             if (!records.TryGetValue(GameKey(game), out var record)) continue;
+            if (!string.Equals(record.Name, game.Name, StringComparison.OrdinalIgnoreCase)) continue;
             if (!string.IsNullOrWhiteSpace(record.Cover) && File.Exists(record.Cover))
                 game.Cover = record.Cover;
             if (record.BackgroundVersion == 2 && !string.IsNullOrWhiteSpace(record.Background) &&
@@ -62,6 +63,37 @@ public static class GameMetadataCache
                     Platforms = game.Platforms,
                     Rating = game.Rating
                 };
+            }
+
+            Directory.CreateDirectory(MetadataFolder);
+            var temporaryPath = IndexPath + ".tmp";
+            File.WriteAllText(temporaryPath, JsonSerializer.Serialize(records, Options));
+            File.Move(temporaryPath, IndexPath, true);
+        }
+    }
+
+    // Removes the cached metadata record for a game (used on uninstall), deleting the
+// cached cover/background art too if it lives inside the shell's metadata folder.
+    public static void Remove(GameEntry game)
+    {
+        lock (Sync)
+        {
+            var records = Load();
+            var key = GameKey(game);
+            if (!records.TryGetValue(key, out var record)) return;
+            records.Remove(key);
+
+            foreach (var path in new[] { record.Cover, record.Background })
+            {
+                if (string.IsNullOrWhiteSpace(path)) continue;
+                try
+                {
+                    var full = Path.GetFullPath(path.Replace('/', Path.DirectorySeparatorChar));
+                    var metadataRoot = Path.GetFullPath(MetadataFolder).TrimEnd(Path.DirectorySeparatorChar);
+                    if (full.StartsWith(metadataRoot, StringComparison.OrdinalIgnoreCase) && File.Exists(full))
+                        File.Delete(full);
+                }
+                catch { }
             }
 
             Directory.CreateDirectory(MetadataFolder);

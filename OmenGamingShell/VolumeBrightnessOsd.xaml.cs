@@ -44,7 +44,7 @@ public partial class VolumeBrightnessOsd : Window
         OsdLabel.Text = isBrightness ? "BRIGHTNESS" : "VOLUME";
         OsdPercent.Text = $"{percent}%";
 
-        if (!IsVisible) PositionNearBottom();
+        if (!IsVisible) PositionAtTopCenter();
         Show();
         UpdateLayout();
 
@@ -55,7 +55,7 @@ public partial class VolumeBrightnessOsd : Window
         _hideTimer.Start();
     }
 
-    private void PositionNearBottom()
+    private void PositionAtTopCenter()
     {
         var area = SystemParameters.WorkArea;
         if (GetCursorPos(out var cursor))
@@ -69,6 +69,6 @@ public partial class VolumeBrightnessOsd : Window
             }
         }
         Left = area.Left + (area.Width - Width) / 2;
-        Top = area.Top + (area.Height - Height) / 2;
+        Top = area.Top + 24;
     }
 }

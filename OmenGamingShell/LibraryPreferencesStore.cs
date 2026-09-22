@@ -35,6 +35,21 @@ public static class LibraryPreferencesStore
         }
     }
 
+    // Removes every persisted preference tied to the game (favorite, hidden, profile).
+    public static void Remove(GameEntry game)
+    {
+        lock (Sync)
+        {
+            var data = Load();
+            var key = Key(game);
+            data.Favorites.Remove(key);
+            data.Hidden.Remove(key);
+            data.PerformanceProfiles.Remove(key);
+            Directory.CreateDirectory(Path.GetDirectoryName(PathName)!);
+            File.WriteAllText(PathName, JsonSerializer.Serialize(data, Options));
+        }
+    }
+
     private static void Update(GameEntry game, bool value, bool favorite)
     {
         lock (Sync)

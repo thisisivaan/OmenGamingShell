@@ -67,6 +67,7 @@ public partial class MainWindow : Window
     private bool _homeSelected;
     private bool _homeHoverLocked;
     private GameEntry? _selectedDetailsGame;
+    private GameEntry? _pendingUninstallGame;
     private bool _lastControllerConnected;
     private string _activeLibraryFilter = "All";
     private HwndSource? _windowSource;
@@ -94,6 +95,7 @@ public partial class MainWindow : Window
     private IReadOnlyList<GameEntry> _slideshowGames = Array.Empty<GameEntry>();
     private Button? _mouseFocusedButton;
     private Button? _mouseSuppressedButton;
+    private bool _nonMouseNavigation;
     private DependencyObject? _lastMouseMoveSource;
     private readonly List<string> _backupFolders = new();
     private bool _automaticBackupEnabled;
@@ -790,12 +792,14 @@ try
     private void Window_PreviewMouseActivity(object sender, MouseEventArgs e)
     {
         ShowCursorForMouseActivity();
+        _nonMouseNavigation = false;
     }
 
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e) => ActivateNonMouseInput();
 
     private void ActivateNonMouseInput()
     {
+        _nonMouseNavigation = true;
         Cursor = Cursors.None;
         _cursorHideTimer.Stop();
         if (_mouseFocusedButton is null) return;
@@ -818,6 +822,7 @@ try
         {
             var games = await Task.Run(() => GameLibrary.Load());
             _ = Dispatcher.BeginInvoke(() => DisplayGames(games));
+            RefreshDetectedRepacks(games.Select(g => g.Name));
         }
         catch (Exception exception)
         {
@@ -845,6 +850,7 @@ try
 
             _allGames = games;
             DisplayGames(games);
+            RefreshDetectedRepacks();
             var howMany = newGames.Count == 1 ? "1 new game" : $"{newGames.Count} new games";
             Notify($"{howMany} detected", "New games found", $"{howMany} detected in your library", IconAdd);
         }
@@ -975,12 +981,21 @@ try
     {
         _selectedDetailsGame = game;
         GameDetailsPage.DataContext = game;
-        LaunchDetailsButton.Content = "LAUNCH GAME";
-        LaunchDetailsButton.Visibility = Visibility.Visible;
+        SetLaunchButton("LAUNCH GAME", "#24C486", true);
         HideGameBackground();
         GameDetailsPage.Visibility = Visibility.Visible;
         SlideIn(GameDetailsPage, 70, 0, 340);
         LaunchDetailsButton.Focus();
+    }
+
+    private void SetLaunchButton(string content, string colorHex, bool enabled)
+    {
+        LaunchDetailsButton.Style = (Style)FindResource("ContextActionButton");
+        LaunchDetailsButton.Background = CreateFrozenBrush(colorHex);
+        LaunchDetailsButton.Content = content;
+        LaunchDetailsButton.IsEnabled = enabled;
+        LaunchDetailsButton.Opacity = 1.0;
+        LaunchDetailsButton.Visibility = Visibility.Visible;
     }
 
     private void ContinueGame_Click(object sender, RoutedEventArgs e)
@@ -1078,6 +1093,7 @@ try
     private const string IconNetwork = "\uE701";
     private const string IconEject = "\uE72D";
     private const string IconAdd = "\uE8B7";
+    private const string IconCheck = "\uE73E";
     private const string IconAudio = "\uE7F5";
 
     private void Notify(string toast, string title, string message, string icon = "\uE7BA", string? tag = null)
@@ -1189,6 +1205,12 @@ try
         PopulateNotifications();
     }
 
+    private void UpdateBanner_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.OriginalSource is System.Windows.Controls.Button) return;
+        UpdateNow_Click(this, new RoutedEventArgs());
+    }
+
     private async void UpdateNow_Click(object sender, RoutedEventArgs e)
     {
         HideUpdateBanner();
@@ -1290,7 +1312,20 @@ try
 
     private void LaunchDetails_Click(object sender, RoutedEventArgs e)
     {
-        if (_selectedDetailsGame is not null) LaunchGame(_selectedDetailsGame);
+        if (_selectedDetailsGame is not null) { LaunchGame(_selectedDetailsGame); return; }
+        if (GameDetailsPage.DataContext is not GameStoreSearchService.SearchResult result) return;
+        if (!LaunchDetailsButton.IsEnabled) return;
+        if (result.HasLocalRepack)
+        {
+            LaunchLocalSetup(result);
+            return;
+        }
+        if (result.IsFitGirlAvailable)
+        {
+            result.IsDownloading = true;
+            StartFitGirlDownload(result);
+            OpenDownloadCenter();
+        }
     }
 
     private void GameFavoriteContext_Click(object sender, RoutedEventArgs e)
@@ -1312,6 +1347,116 @@ try
         LibraryPreferencesStore.SetHidden(game, game.IsHidden);
         ApplyLibraryFilters();
         ShowNotification(game.IsHidden ? $"{game.Name} hidden" : $"{game.Name} restored");
+    }
+
+    private void GameUninstallContext_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem { Tag: GameEntry game }) return;
+        var folder = game.UninstallFolder;
+        var storeTarget = game.StoreUninstallTarget;
+        if (string.IsNullOrWhiteSpace(folder) && string.IsNullOrWhiteSpace(storeTarget)) return;
+
+        _pendingUninstallGame = game;
+        UninstallConfirmGameName.Text = game.Name;
+        if (!string.IsNullOrWhiteSpace(storeTarget))
+        {
+            UninstallConfirmText.Text = $"This will ask {game.StoreName} to uninstall {game.Name}.";
+            UninstallConfirmFolder.Text = string.Empty;
+        }
+        else
+        {
+            UninstallConfirmText.Text = "This will permanently delete the game files from disk.";
+            UninstallConfirmFolder.Text = folder;
+        }
+        UninstallConfirmOverlay.Visibility = Visibility.Visible;
+        SlideIn(UninstallConfirmOverlay, 0, 24, 260);
+        UninstallConfirmOverlay.MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
+    }
+
+    private void CancelUninstall_Click(object sender, RoutedEventArgs e)
+    {
+        _pendingUninstallGame = null;
+        CloseUninstallConfirm();
+    }
+
+    private async void ConfirmUninstall_Click(object sender, RoutedEventArgs e)
+    {
+        var game = _pendingUninstallGame;
+        if (game is null) { CloseUninstallConfirm(); return; }
+        CloseUninstallConfirm();
+        _pendingUninstallGame = null;
+
+        if (_gameSession.IsActive && _gameSession.CurrentGame?.Target == game.Target)
+        {
+            StatusText.Text = "CLOSE THE GAME BEFORE UNINSTALLING";
+            return;
+        }
+
+        var storeTarget = game.StoreUninstallTarget;
+        if (!string.IsNullOrWhiteSpace(storeTarget))
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo(storeTarget) { UseShellExecute = true });
+            }
+            catch (Exception exception)
+            {
+                StatusText.Text = $"FAILED TO OPEN UNINSTALLER: {exception.Message}";
+            }
+            return;
+        }
+
+        var folder = game.UninstallFolder;
+        if (string.IsNullOrWhiteSpace(folder) || !Directory.Exists(folder))
+        {
+            StatusText.Text = "GAME FOLDER NOT FOUND - CANNOT UNINSTALL";
+            return;
+        }
+
+        StatusText.Text = $"UNINSTALLING {game.Name.ToUpperInvariant()}...";
+        try
+        {
+            // Delete the game folder, then the repack that produced it (if still present),
+            // then purge every shell store entry so the game vanishes completely.
+            await Task.Run(() => Directory.Delete(folder, true));
+            var games = await Task.Run(() => GameLibrary.Load());
+            _ = Dispatcher.BeginInvoke(() =>
+            {
+                _allGames = games;
+                DisplayGames(games);
+                RefreshDetectedRepacks(games.Select(item => item.Name));
+                FreePlayHistory(game);
+                Notify($"{game.Name} uninstalled", "Game uninstalled", $"{game.Name} was removed from disk", IconCheck);
+            });
+        }
+        catch (Exception exception)
+        {
+            StatusText.Text = $"FAILED TO UNINSTALL: {exception.Message}";
+        }
+    }
+
+    private void CloseUninstallConfirm()
+    {
+        if (UninstallConfirmOverlay.Visibility != Visibility.Visible) return;
+        UninstallConfirmOverlay.IsHitTestVisible = false;
+        try
+        {
+            UninstallConfirmOverlay.Visibility = Visibility.Collapsed;
+            UninstallConfirmOverlay.Opacity = 1;
+        }
+        catch { UninstallConfirmOverlay.Visibility = Visibility.Collapsed; }
+    }
+
+    private static void FreePlayHistory(GameEntry game)
+    {
+        try
+        {
+            PlayHistoryStore.Remove(game);
+            LibraryPreferencesStore.Remove(game);
+            MetadataOverrideStore.Remove(game);
+            GameMetadataCache.Remove(game);
+        }
+        catch { }
     }
 
     private void HandleControllerAcceptHeld()
@@ -2250,8 +2395,28 @@ try
         StoreGamesGrid.ItemsSource = null;
         StoreEmptyText.Visibility = Visibility.Visible;
         StoreSearchSpinner.Visibility = Visibility.Collapsed;
+        RefreshStoreFreeSpace();
         GameStorePage.Visibility = Visibility.Visible;
-        MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
+        GameStorePage.MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
+    }
+
+    // Shows how much room is left on the drive that hosts the torrent download
+    // folder, so the user can judge whether a repack will fit before starting it.
+    private void RefreshStoreFreeSpace()
+    {
+        try
+        {
+            var root = TorrentDownloadService.GetDownloadPath();
+            if (string.IsNullOrWhiteSpace(root)) return;
+            var drive = new System.IO.DriveInfo(Path.GetPathRoot(Path.GetFullPath(root)));
+            if (!drive.IsReady) return;
+            var freeGb = drive.AvailableFreeSpace / 1024f / 1024f / 1024f;
+            StoreFreeSpaceText.Text = $"{freeGb:0.0} GB free  \u2022  {drive.VolumeLabel} ({drive.Name.TrimEnd('\\')})";
+        }
+        catch
+        {
+            StoreFreeSpaceText.Text = "";
+        }
     }
 
     private void StoreBack_Click(object sender, RoutedEventArgs e) => CloseGameStore();
@@ -2277,72 +2442,195 @@ try
         {
             _storeSearchCts?.Cancel();
             StoreSearchSpinner.Visibility = Visibility.Collapsed;
+            StoreSearchStatus.Text = "";
             StoreGamesGrid.ItemsSource = null;
             StoreEmptyText.Text = "Search for games on IGDB";
             StoreEmptyText.Visibility = Visibility.Visible;
             return;
         }
-        StoreEmptyText.Visibility = Visibility.Collapsed;
+StoreEmptyText.Visibility = Visibility.Collapsed;
+        StoreSearchStatus.Text = "Searching IGDB...";
         StoreSearchSpinner.Visibility = Visibility.Visible;
-        _storeSearchDebounce ??= new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
-        _storeSearchDebounce.Tick += async (_, _) =>
+        if (_storeSearchDebounce is null)
         {
-            _storeSearchDebounce.Stop();
-            _storeSearchCts?.Cancel();
-            _storeSearchCts = new CancellationTokenSource();
-            var token = _storeSearchCts.Token;
-            try
-            {
-                var installedNames = _allGames.Select(g => g.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
-                var results = await GameStoreSearchService.SearchAsync(query, installedNames, token);
-                if (token.IsCancellationRequested) return;
-                StoreGamesGrid.ItemsSource = results;
-                StoreEmptyText.Text = results.Count == 0 ? "No games found" : "";
-                StoreEmptyText.Visibility = results.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-            }
-            catch (OperationCanceledException) { }
-            catch
-            {
-                if (!token.IsCancellationRequested)
-                {
-                    StoreEmptyText.Text = "Search failed";
-                    StoreEmptyText.Visibility = Visibility.Visible;
-                }
-            }
-            finally { if (!token.IsCancellationRequested) StoreSearchSpinner.Visibility = Visibility.Collapsed; }
-        };
+            _storeSearchDebounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
+            _storeSearchDebounce.Tick += StoreSearchDebounce_Tick;
+        }
+        _storeSearchDebounce.Stop();
         _storeSearchDebounce.Start();
+    }
+
+    private async void StoreSearchDebounce_Tick(object? sender, EventArgs e)
+    {
+        _storeSearchDebounce?.Stop();
+        var query = StoreSearchBox.Text.Trim();
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            StoreSearchSpinner.Visibility = Visibility.Collapsed;
+            StoreSearchStatus.Text = "";
+            StoreGamesGrid.ItemsSource = null;
+            return;
+        }
+
+        _storeSearchCts?.Cancel();
+        _storeSearchCts = new CancellationTokenSource();
+        var token = _storeSearchCts.Token;
+        try
+        {
+            var installedNames = _allGames.Select(g => g.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            // Fire IGDB and FitGirl searches at the same time.
+            var igdbTask = GameStoreSearchService.SearchAsync(query, installedNames, token);
+            var fitGirlTask = FitGirlScrapingService.StartQuerySearch(query);
+            var results = (await igdbTask).ToList();
+            if (token.IsCancellationRequested) return;
+
+            // Resolve which results are clickable (have a repack) BEFORE showing
+            // them, so the list never appears with rows that flip grey afterwards.
+            StoreSearchStatus.Text = "Checking FitGirl repacks...";
+            await ResolveStoreAvailabilityAsync(results, fitGirlTask, token);
+            if (token.IsCancellationRequested) return;
+
+            StoreGamesGrid.ItemsSource = results;
+            StoreSearchStatus.Text = results.Count switch
+            {
+                0 => "No matching games found",
+                1 => "1 result",
+                _ => $"{results.Count} results",
+            };
+            StoreEmptyText.Text = results.Count == 0 ? "No games found" : "";
+            StoreEmptyText.Visibility = results.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        }
+        catch (OperationCanceledException) { }
+        catch
+        {
+            if (!token.IsCancellationRequested)
+            {
+                StoreSearchStatus.Text = "Search failed";
+                StoreEmptyText.Text = "Search failed";
+                StoreEmptyText.Visibility = Visibility.Visible;
+            }
+        }
+        finally { if (!token.IsCancellationRequested) StoreSearchSpinner.Visibility = Visibility.Collapsed; }
+    }
+
+    private async Task ResolveStoreAvailabilityAsync(
+        IReadOnlyList<GameStoreSearchService.SearchResult> results,
+        Task<List<FitGirlMatch>> fitGirlTask,
+        CancellationToken token)
+    {
+        try
+        {
+            var availability = await FitGirlScrapingService.ResolveAvailabilityAsync(fitGirlTask, results.Select(r => r.Name).ToList(), token);
+            if (token.IsCancellationRequested) return;
+
+            // Local repacks on disk (downloaded but never installed) get a yellow
+            // container with an install icon that runs the setup directly.
+            var localRepacks = DownloadCenterService.DiscoverRepacksOnDisk()
+                .Select(d => (Core: FitGirlScrapingService.NormalizeName(d.Name), d.Setup, d.Dir))
+                .Where(d => d.Core.Length > 0)
+                .GroupBy(d => d.Core, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.First().Setup, StringComparer.OrdinalIgnoreCase);
+
+            foreach (var result in results)
+            {
+                if (result.IsInstalled) continue;
+
+                if (localRepacks.TryGetValue(FitGirlScrapingService.NormalizeName(result.Name), out var setupPath))
+                    result.LocalSetupPath = setupPath;
+
+                // If the game is already in the local library by a different
+                // display name, keep it clickable too.
+                if (_allGames.Any(g => g.Name.Equals(result.Name, StringComparison.OrdinalIgnoreCase)))
+                {
+                    result.IsFitGirlAvailable = true;
+                    continue;
+                }
+
+                if (availability.TryGetValue(result.Name, out var available))
+                    result.IsFitGirlAvailable = available;
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch { } // keep everything clickable on any hiccup
     }
 
     private void StoreResultAction_Click(object sender, MouseButtonEventArgs e)
     {
-        e.Handled = true;
         if (sender is not FrameworkElement { Tag: GameStoreSearchService.SearchResult result }) return;
-        if (result.IsInstalled) return;
+        if (result.IsInstalled) return; // green: informational icon, the container click falls through
+        e.Handled = true;
+        if (result.HasLocalRepack)
+        {
+            // yellow: repack already on disk -> open its setup directly
+            FlashElement(sender as FrameworkElement);
+            LaunchLocalSetup(result);
+            return;
+        }
+        if (!result.IsFitGirlAvailable) return;
+        // red: start the FitGirl download and jump to the Download Center
         FlashElement(sender as FrameworkElement);
+        result.IsDownloading = true;
         StartFitGirlDownload(result);
+        OpenDownloadCenter();
     }
 
     private void StoreResultRow_Click(object sender, MouseButtonEventArgs e)
     {
         if (sender is not FrameworkElement { Tag: GameStoreSearchService.SearchResult result }) return;
+        if (!result.IsFitGirlAvailable && !result.IsInstalled && !result.HasLocalRepack) return;
         FlashElement(sender as FrameworkElement);
+        OpenStoreResultDetails(result);
+    }
+
+    private void OpenStoreResultDetails(GameStoreSearchService.SearchResult result)
+    {
+        // Installed game: metadata sourced from the local library, green
+        // "LAUNCH GAME" button that launches the game.
         if (result.IsInstalled)
         {
             var game = _allGames.FirstOrDefault(g => g.Name.Equals(result.Name, StringComparison.OrdinalIgnoreCase));
-            if (game is not null)
-            {
-                OpenGameDetails(game);
-                return;
-            }
+            if (game is not null) { OpenGameDetails(game); return; }
         }
         _selectedDetailsGame = null;
         GameDetailsPage.DataContext = result;
-        LaunchDetailsButton.Content = "DOWNLOAD";
-        LaunchDetailsButton.Visibility = Visibility.Visible;
+        ConfigureStoreLaunchButton(result);
         GameDetailsPage.Visibility = Visibility.Visible;
         SlideIn(GameDetailsPage, 70, 0, 340);
         DetailsBackButton.Focus();
+    }
+
+    // Launch button follows the store container state:
+    //  - yellow (repack on disk, not installed) -> "INSTALL", opens the setup directly,
+    //    dimmer + unclickable while that repack is still downloading/installing;
+    //  - red (FitGirl repack available)         -> "DOWNLOAD", starts the download and
+    //    opens the Download Center.
+    private void ConfigureStoreLaunchButton(GameStoreSearchService.SearchResult result)
+    {
+        var installing = IsStoreRepackInstalling(result.Name);
+        if (result.HasLocalRepack)
+        {
+            SetLaunchButton("INSTALL", "#E8B83C", !installing);
+            return;
+        }
+        if (result.IsFitGirlAvailable)
+        {
+            SetLaunchButton("DOWNLOAD", "#FF003C", !installing);
+            return;
+        }
+        LaunchDetailsButton.Visibility = Visibility.Collapsed;
+    }
+
+    private static bool IsStoreRepackInstalling(string name)
+    {
+        return DownloadCenterService.GetDownloads().Any(d =>
+            d.Status is DownloadStatus.Searching or DownloadStatus.Matching or DownloadStatus.Queued or DownloadStatus.Downloading or DownloadStatus.Paused or DownloadStatus.Installing &&
+            d.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static void LaunchLocalSetup(GameStoreSearchService.SearchResult result)
+    {
+        if (!string.IsNullOrWhiteSpace(result.LocalSetupPath))
+            DownloadCenterService.LaunchInstallerFromPath(result.LocalSetupPath);
     }
 
     private static void FlashElement(FrameworkElement? fe)
@@ -2734,6 +3022,7 @@ try
         else if (ReferenceEquals(sender, MetadataCorrectionOverlay))
             CancelMetadataCorrection_Click(this, new RoutedEventArgs());
         else if (ReferenceEquals(sender, NotificationCenterOverlay)) NotificationCenterOverlay.Visibility = Visibility.Collapsed;
+        else if (ReferenceEquals(sender, UninstallConfirmOverlay)) { _pendingUninstallGame = null; CloseUninstallConfirm(); }
     }
 
     private void CloseSettings()
@@ -3850,14 +4139,22 @@ private static List<TaskWindowEntry> GetTaskWindows(IntPtr shellHandle)
             var saved = DownloadCenterService.LoadState();
             if (saved.Count == 0) return;
 
-            DownloadCenterService.Init(Dispatcher);
-            DownloadCenterService.DownloadsChanged -= OnDownloadsChanged;
-            DownloadCenterService.DownloadsChanged += OnDownloadsChanged;
-            DownloadCenterService.NotificationRequested -= OnDownloadNotification;
-            DownloadCenterService.NotificationRequested += OnDownloadNotification;
+            WireDownloadCenterService();
 
             foreach (var state in saved)
             {
+                // A silent install we were in the middle of when the app/OS
+                // died: re-launch the same setup against the same target so the
+                // extraction finishes. Partial data on disk is kept (StartSilentInstall
+                // skips the debris wipe for resumes).
+                if (!string.IsNullOrWhiteSpace(state.SetupFilePath) &&
+                    !string.IsNullOrWhiteSpace(state.InstallDir))
+                {
+                    LogDownload($"[{state.Name}] Resuming interrupted install...");
+                    DownloadCenterService.ResumeInstall(state);
+                    continue;
+                }
+
                 if (string.IsNullOrEmpty(state.MagnetUri)) continue;
                 LogDownload($"[{state.Name}] Auto-resuming saved download...");
                 var item = DownloadCenterService.AddDownload(state.Name, state.CoverUrl);
@@ -3871,16 +4168,61 @@ private static List<TaskWindowEntry> GetTaskWindows(IntPtr shellHandle)
 
     private void OpenDownloadCenter()
     {
-        DownloadCenterService.Init(Dispatcher);
-        DownloadCenterService.DownloadsChanged -= OnDownloadsChanged;
-        DownloadCenterService.DownloadsChanged += OnDownloadsChanged;
-        DownloadCenterService.NotificationRequested -= OnDownloadNotification;
-        DownloadCenterService.NotificationRequested += OnDownloadNotification;
+        WireDownloadCenterService();
+        RefreshDetectedRepacks();
         RefreshDownloadCenterList();
         PrepareOverlayForOpen(DownloadCenterPage);
         // Focus into the page itself: a window-level MoveFocus lands on the home screen's
         // Continue tile, leaving the controller navigating the shell behind the overlay.
         DownloadCenterPage.MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
+    }
+
+    // Discovers FitGirl repacks sitting on disk that were never installed, so they
+    // show up in the Download Center with an Install button instead of being lost.
+    private void RefreshDetectedRepacks(IEnumerable<string>? installed = null)
+    {
+        var installedNames = (installed ?? _allGames.Select(g => g.Name)).ToList();
+        _ = Task.Run(async () =>
+        {
+            DownloadCenterService.Init(Dispatcher);
+            DownloadCenterService.ScanForExistingRepacks(installedNames);
+            await FillMissingCoversAsync();
+            await FillMissingInstallSizesAsync();
+        });
+    }
+
+    // Detected-repack rows are created with no cover (the store flow is where a
+    // cover usually comes from). Look each absent cover up on IGDB once so the
+    // rows don't render as blank images.
+    private async Task FillMissingCoversAsync()
+    {
+        foreach (var d in DownloadCenterService.GetDownloads())
+        {
+            if (!string.IsNullOrWhiteSpace(d.CoverUrl)) continue;
+            var cover = await GameStoreSearchService.FindCoverUrlAsync(d.Name);
+            if (string.IsNullOrWhiteSpace(cover)) continue;
+            d.CoverUrl = cover;
+        }
+    }
+
+    // Detected-repack rows come from disk, not the store flow, so they never carry
+    // the published post-extraction size. Look it up on the FitGirl post so the
+    // storage guard refuses on the real requirement instead of the compressed
+    // archive size. Rows created by the store already scrape this at download time.
+    private async Task FillMissingInstallSizesAsync()
+    {
+        foreach (var d in DownloadCenterService.GetDownloads())
+        {
+            if (d.ExpectedInstallBytes > 0) continue;
+            FitGirlMatch? match = null;
+            try { match = await FitGirlScrapingService.FindBestMatchAsync(d.Name); }
+            catch { }
+            if (match is null) continue;
+            var size = await FitGirlScrapingService.ExtractInstallSizeBytesAsync(match.Url);
+            if (size <= 0) continue;
+            d.ExpectedInstallBytes = size;
+            LogDownload($"[{d.Name}] Install size: {size:N0} bytes");
+        }
     }
 
     private void DownloadCenterBack_Click(object sender, RoutedEventArgs e) => CloseDownloadCenter();
@@ -3917,14 +4259,97 @@ private static List<TaskWindowEntry> GetTaskWindows(IntPtr shellHandle)
     private void OnDownloadsChanged()
     {
         if (Dispatcher.CheckAccess())
+        {
             RefreshDownloadCenterList();
+            SyncStoreResultDownloadStates();
+            if (GameStorePage.Visibility == Visibility.Visible) RefreshStoreFreeSpace();
+        }
         else
-            Dispatcher.BeginInvoke(RefreshDownloadCenterList);
+            Dispatcher.BeginInvoke(() =>
+            {
+                RefreshDownloadCenterList();
+                SyncStoreResultDownloadStates();
+                if (GameStorePage.Visibility == Visibility.Visible) RefreshStoreFreeSpace();
+            });
+    }
+
+    // Keeps the store results' download/install state live so each card shows its
+    // real progress bar and status (the yellow spinner stops once the repack
+    // finishes; an install row shows its own spinning state + progress).
+    private void SyncStoreResultDownloadStates()
+    {
+        if (StoreGamesGrid.ItemsSource is not System.Collections.IEnumerable items) return;
+        var byName = DownloadCenterService.GetDownloads()
+            .ToDictionary(d => d.Name, StringComparer.OrdinalIgnoreCase);
+        foreach (var obj in items)
+        {
+            if (obj is not GameStoreSearchService.SearchResult r) continue;
+            var d = byName.GetValueOrDefault(r.Name);
+            if (d is null)
+            {
+                r.IsDownloading = false;
+                r.IsInstalling = false;
+                continue;
+            }
+            r.IsInstalling = d.IsInstalling;
+            r.IsDownloading = d.Status is DownloadStatus.Searching or DownloadStatus.Matching
+                or DownloadStatus.Queued or DownloadStatus.Downloading or DownloadStatus.Paused;
+            r.ProgressWidth = Math.Min(d.ProgressWidth, 320); // store cards are narrower than DC rows
+            r.ProgressText = d.ProgressText;
+            r.ActivityText = d.IsInstalling
+                ? $"Installing...  {d.ProgressText}"
+                : string.IsNullOrWhiteSpace(d.SpeedText)
+                    ? d.StatusText
+                    : $"{d.SpeedText}  •  ETA {d.EtaText}";
+        }
+        if (GameDetailsPage.Visibility == Visibility.Visible &&
+            GameDetailsPage.DataContext is GameStoreSearchService.SearchResult dc)
+            ConfigureStoreLaunchButton(dc);
     }
 
     private void OnDownloadNotification(string message)
     {
         ShowNotification(message, () => OpenDownloadCenter());
+    }
+
+    private void WireDownloadCenterService()
+    {
+        DownloadCenterService.Init(Dispatcher);
+        DownloadCenterService.DownloadsChanged -= OnDownloadsChanged;
+        DownloadCenterService.DownloadsChanged += OnDownloadsChanged;
+        DownloadCenterService.NotificationRequested -= OnDownloadNotification;
+        DownloadCenterService.NotificationRequested += OnDownloadNotification;
+        DownloadCenterService.InstallCompleted -= OnInstallCompleted;
+        DownloadCenterService.InstallCompleted += OnInstallCompleted;
+        DownloadCenterService.InstallFailed -= OnInstallFailed;
+        DownloadCenterService.InstallFailed += OnInstallFailed;
+    }
+
+    // A silent install just finished: re-scan the library so the newly installed
+    // game appears (green) in the store, let the Download Center reclaim the
+    // repack folder, and offer a "click to launch" toast for the fresh game.
+    private async void OnInstallCompleted(DownloadItem item)
+    {
+        LogDownload($"[{item.Name}] Install completed; rescanning library...");
+        var games = await Task.Run(() => GameLibrary.Load());
+        _ = Dispatcher.BeginInvoke(() =>
+        {
+            DisplayGames(games);
+            RefreshDetectedRepacks(games.Select(g => g.Name));
+            SyncStoreResultDownloadStates();
+
+            var game = _allGames.FirstOrDefault(
+                g => g.Name.Equals(item.Name, StringComparison.OrdinalIgnoreCase));
+            if (game is not null)
+                ShowNotification($"{item.Name} installed \u2014 click to launch", () => LaunchGame(game));
+            else
+                ShowNotification($"{item.Name} installed");
+        });
+    }
+
+    private void OnInstallFailed(DownloadItem item)
+    {
+        LogDownload($"[{item.Name}] Install failed");
     }
 
     private void DownloadCenterSettings_Click(object sender, RoutedEventArgs e)
@@ -4018,13 +4443,30 @@ private static List<TaskWindowEntry> GetTaskWindows(IntPtr shellHandle)
         DownloadCenterService.OpenDownloadFolder(item);
     }
 
+    private void DownloadInstall_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: DownloadItem item }) return;
+        FlashElement(sender as FrameworkElement);
+        DownloadCenterService.LaunchInstaller(item);
+    }
+
+    // Clicking a detected-repack row starts a silent install. Clicks on the
+    // action buttons (pause/cancel/install/folder) are left to their own
+    // handlers.
+    private void DownloadRow_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.OriginalSource is DependencyObject source &&
+            FindAncestor<System.Windows.Controls.Button>(source) is not null) return;
+        if (sender is FrameworkElement { DataContext: DownloadItem item } && item.CanInstall)
+        {
+            FlashElement(sender as FrameworkElement);
+            DownloadCenterService.LaunchInstaller(item);
+        }
+    }
+
     private async void StartFitGirlDownload(GameStoreSearchService.SearchResult result)
     {
-        DownloadCenterService.Init(Dispatcher);
-        DownloadCenterService.DownloadsChanged -= OnDownloadsChanged;
-        DownloadCenterService.DownloadsChanged += OnDownloadsChanged;
-        DownloadCenterService.NotificationRequested -= OnDownloadNotification;
-        DownloadCenterService.NotificationRequested += OnDownloadNotification;
+        WireDownloadCenterService();
 
         var item = DownloadCenterService.AddDownload(result.Name, result.Cover);
         item.Status = DownloadStatus.Searching;
@@ -4055,6 +4497,16 @@ private static List<TaskWindowEntry> GetTaskWindows(IntPtr shellHandle)
             var torrentUrl = await FitGirlScrapingService.ExtractTorrentFileUrlAsync(match.Url);
 
             LogDownload($"[{result.Name}] Torrent file: {(torrentUrl is not null ? "found" : "none")}");
+
+            // Pre-fetch the published "Install size" now (page is already loaded),
+            // so a silent auto-install later can show real progress against it.
+            item.ExpectedInstallBytes = await FitGirlScrapingService.ExtractInstallSizeBytesAsync(match.Url);
+            LogDownload($"[{result.Name}] Install size: {item.ExpectedInstallBytes:N0} bytes");
+
+            // Pre-fetch the published "Download size" so the storage guard can
+            // refuse the download up front when the drive cannot hold it.
+            item.ExpectedDownloadBytes = await FitGirlScrapingService.ExtractDownloadSizeBytesAsync(match.Url);
+            LogDownload($"[{result.Name}] Download size: {item.ExpectedDownloadBytes:N0} bytes");
 
             if (string.IsNullOrEmpty(magnet))
             {
