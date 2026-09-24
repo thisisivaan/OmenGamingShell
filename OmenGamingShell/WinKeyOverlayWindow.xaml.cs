@@ -56,7 +56,6 @@ public partial class WinKeyOverlayWindow : Window
         RefreshApps(string.Empty);
         RefreshDashboardSafe();
         RefreshStatusBar();
-        UpdatePerfModeDisplay();
         InstalledAppsCatalog.WarmUp();
 
         Dispatcher.BeginInvoke(() =>
@@ -80,10 +79,7 @@ public partial class WinKeyOverlayWindow : Window
 
         SearchBox.Text = string.Empty;
         WindowList.ItemsSource = null;
-        AppsList.ItemsSource = null;
         WindowsSection.Visibility = Visibility.Collapsed;
-        AppsSection.Visibility = Visibility.Collapsed;
-        EmptyHint.Visibility = Visibility.Collapsed;
 
         Hide();
 
@@ -118,6 +114,14 @@ public partial class WinKeyOverlayWindow : Window
             SearchBox.Focus();
             SearchBox.CaretIndex = SearchBox.Text.Length;
         }
+        else if (key == Key.Back || key == Key.Delete)
+        {
+            SearchBox.Focus();
+            if (SearchBox.Text.Length > 0)
+                SearchBox.Text = SearchBox.Text[..^1];
+            SearchBox.CaretIndex = SearchBox.Text.Length;
+            e.Handled = true;
+        }
     }
 
     private void Overlay_KeyDown(object sender, KeyEventArgs e)
@@ -126,6 +130,40 @@ public partial class WinKeyOverlayWindow : Window
         {
             CloseOverlay();
             e.Handled = true;
+        }
+        else if (e.Key == Key.Enter && AppsList.ItemsSource is System.Collections.IList { Count: > 0 })
+        {
+            LaunchFirstSearchResult();
+            e.Handled = true;
+        }
+    }
+
+    private void Overlay_PreviewTextInput(object sender, TextCompositionEventArgs e)
+    {
+        if (!_overlayOpen) return;
+        if (SearchBox.IsKeyboardFocused) return;
+        if (string.IsNullOrEmpty(e.Text)) return;
+        e.Handled = true;
+        SearchBox.Focus();
+        var insertAt = SearchBox.CaretIndex;
+        SearchBox.Text = SearchBox.Text.Insert(insertAt, e.Text);
+        SearchBox.CaretIndex = insertAt + e.Text.Length;
+    }
+
+    private void LaunchFirstSearchResult()
+    {
+        if (!_overlayOpen) return;
+        if (AppsList.ItemsSource is not System.Collections.IList list || list.Count == 0) return;
+        _suppressRestore = true;
+        CloseOverlay(false);
+        switch (list[0])
+        {
+            case GameEntry game when _shell.VisibleGames.Contains(game):
+                _shell.LaunchGame(game);
+                break;
+            case AppEntry app:
+                app.Launch();
+                break;
         }
     }
 
@@ -140,7 +178,7 @@ public partial class WinKeyOverlayWindow : Window
         var source = e.OriginalSource as DependencyObject;
         if (FindAncestor<Button>(source) is not null) return;
         if (e.OriginalSource is TextBox) return;
-        if (FindAncestor<Border>(source, border => border.Name == "Dashboard" || border.Name == "SearchBorder" || border.Name == "StatusBorder") is not null) return;
+        if (FindAncestor<Border>(source, border => border.Name is "MediaCard" or "SearchBorder" or "StatusBorder") is not null) return;
         CloseOverlay();
         e.Handled = true;
     }
@@ -216,40 +254,33 @@ public partial class WinKeyOverlayWindow : Window
         _windows = GetTaskWindows(overlayHandle, shellHandle);
         WindowList.ItemsSource = _windows;
         WindowsSection.Visibility = _windows.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
-        EmptyHint.Visibility = (_windows.Count == 0 && AppsSection.Visibility != Visibility.Visible)
-            ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void RefreshApps(string query)
     {
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            PopulateFavorites();
+            return;
+        }
         var games = _shell.VisibleGames;
-        if (!string.IsNullOrWhiteSpace(query))
-        {
-            var results = new List<object>();
-            var installedApps = InstalledAppsCatalog.GetApps();
-            results.AddRange(games.Where(a => a.Name.Contains(query, StringComparison.OrdinalIgnoreCase)));
-            results.AddRange(installedApps.Where(a => a.Name.Contains(query, StringComparison.OrdinalIgnoreCase)));
-            var unique = results
-                .GroupBy(item => item switch
-                {
-                    GameEntry game => game.Name,
-                    AppEntry app => app.Name,
-                    _ => item.ToString()
-                }, StringComparer.OrdinalIgnoreCase)
-                .Select(group => group.First())
-                .OrderBy(item => item switch { GameEntry game => game.Name, AppEntry app => app.Name, _ => "" },
-                    StringComparer.OrdinalIgnoreCase)
-                .ToList();
-            AppsList.ItemsSource = unique;
-            AppsSection.Visibility = unique.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
-        }
-        else
-        {
-            AppsList.ItemsSource = null;
-            AppsSection.Visibility = Visibility.Collapsed;
-        }
-        EmptyHint.Visibility = (WindowsSection.Visibility != Visibility.Visible && AppsSection.Visibility != Visibility.Visible)
-            ? Visibility.Visible : Visibility.Collapsed;
+        var results = new List<object>();
+        var installedApps = InstalledAppsCatalog.GetApps();
+        results.AddRange(games.Where(a => a.Name.Contains(query, StringComparison.OrdinalIgnoreCase)));
+        results.AddRange(installedApps.Where(a => a.Name.Contains(query, StringComparison.OrdinalIgnoreCase)));
+        var unique = results
+            .GroupBy(item => item switch
+            {
+                GameEntry game => game.Name,
+                AppEntry app => app.Name,
+                _ => item.ToString()
+            }, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .OrderBy(item => item switch { GameEntry game => game.Name, AppEntry app => app.Name, _ => "" },
+                StringComparer.OrdinalIgnoreCase)
+            .Take(5)
+            .ToList();
+        AppsList.ItemsSource = unique;
     }
 
     private void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
@@ -271,8 +302,6 @@ public partial class WinKeyOverlayWindow : Window
             WindowList.ItemsSource = filtered;
             WindowsSection.Visibility = filtered.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         }
-        EmptyHint.Visibility = (WindowsSection.Visibility != Visibility.Visible && AppsSection.Visibility != Visibility.Visible)
-            ? Visibility.Visible : Visibility.Collapsed;
         _captureDebounce.Stop();
         _captureDebounce.Start();
     }
@@ -285,12 +314,6 @@ public partial class WinKeyOverlayWindow : Window
     private void SearchBox_LostKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
     {
         SearchBorder.BorderBrush = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#14FFFFFF"));
-    }
-
-    private void SearchButton_Click(object sender, RoutedEventArgs e)
-    {
-        SearchBox.Focus();
-        SearchBox.CaretIndex = SearchBox.Text.Length;
     }
 
     private void TaskWindow_Click(object sender, RoutedEventArgs e)
@@ -316,11 +339,14 @@ public partial class WinKeyOverlayWindow : Window
         }
     }
 
-    private void PerformanceMode_Click(object sender, RoutedEventArgs e)
+    private void FavoriteTile_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is not Button { Tag: string mode }) return;
-        _shell.ApplyPerformanceModeFromOverlay(mode);
-        UpdatePerfModeDisplay();
+        if (sender is not Button { Tag: not null } button) return;
+        CloseOverlay();
+        if (button.Tag is GameEntry game && _shell.VisibleGames.Contains(game))
+            _shell.LaunchGame(game);
+        else if (button.Tag is AppEntry app)
+            app.Launch();
     }
 
     private void MediaPlay_Click(object sender, RoutedEventArgs e) => _ = MediaService.TogglePlayPauseAsync();
@@ -358,27 +384,12 @@ public partial class WinKeyOverlayWindow : Window
         MediaMuteButton.Content = muted ? "\uE74F" : "\uE767";
     }
 
-    private void StoreClick(object sender, MouseButtonEventArgs e)
-    {
-        _suppressRestore = true;
-        CloseOverlay(false);
-        _shell.OpenGameStore();
-    }
-
-    private void NotificationClick(object sender, MouseButtonEventArgs e)
-    {
-        CloseOverlay();
-        _shell.ShowNotificationCenter();
-    }
-
     private void RefreshDashboardSafe()
     {
         if (!_overlayOpen) return;
         try
         {
             _ = RefreshMediaAsync();
-            RefreshNotifications();
-            RefreshStoreFeatured();
             RefreshVolumeState();
         }
         catch { }
@@ -392,8 +403,39 @@ public partial class WinKeyOverlayWindow : Window
             var now = DateTime.Now;
             ClockText.Text = now.ToString("HH:mm");
             DateText.Text = now.ToString("dddd, dd MMMM").ToUpperInvariant();
+            PerformanceText.Text = _shell.CurrentPerformanceMode.ToUpperInvariant();
             RefreshBattery();
+            RefreshShellBadges();
             if (_statusTick++ % 5 == 0) RefreshConnectivity();
+        }
+        catch { }
+    }
+
+    private void RefreshShellBadges()
+    {
+        try
+        {
+            var active = DownloadCenterService.ActiveCount;
+            if (active > 0)
+            {
+                OverlayDownloadBadge.Visibility = Visibility.Visible;
+                OverlayDownloadBadgeText.Text = active.ToString();
+            }
+            else
+            {
+                OverlayDownloadBadge.Visibility = Visibility.Collapsed;
+            }
+
+            var errors = ErrorLogStore.LoadLogged().Count;
+            if (errors > 0)
+            {
+                OverlayErrorBadge.Visibility = Visibility.Visible;
+                OverlayErrorBadgeText.Text = errors > 99 ? "99+" : errors.ToString();
+            }
+            else
+            {
+                OverlayErrorBadge.Visibility = Visibility.Collapsed;
+            }
         }
         catch { }
     }
@@ -433,7 +475,13 @@ public partial class WinKeyOverlayWindow : Window
             }
         }
         catch { }
-        BluetoothStatusIcon.Opacity = MainWindow.IsBluetoothRadioAvailable() ? 1 : 0.35;
+        _ = UpdateBluetoothStatusAsync();
+    }
+
+    private async Task UpdateBluetoothStatusAsync()
+    {
+        var available = await MainWindow.IsBluetoothRadioAvailable().ConfigureAwait(true);
+        BluetoothStatusIcon.Opacity = available ? 1 : 0.35;
     }
 
     private void WifiButton_Click(object sender, RoutedEventArgs e)
@@ -441,6 +489,55 @@ public partial class WinKeyOverlayWindow : Window
         _suppressRestore = true;
         CloseOverlay(false);
         _shell.ShowConnectionsFromOverlay(true);
+    }
+
+    private void ShellRefreshButton_Click(object sender, RoutedEventArgs e)
+    {
+        _suppressRestore = true;
+        CloseOverlay(false);
+        _shell.RefreshGamesFromOverlay();
+    }
+
+    private void ShellDownloadButton_Click(object sender, RoutedEventArgs e)
+    {
+        _suppressRestore = true;
+        CloseOverlay(false);
+        _shell.OpenDownloadCenterFromOverlay();
+    }
+
+    private void ShellSettingsButton_Click(object sender, RoutedEventArgs e)
+    {
+        _suppressRestore = true;
+        CloseOverlay(false);
+        _shell.OpenSettingsFromOverlay();
+    }
+
+    private void ShellErrorButton_Click(object sender, RoutedEventArgs e)
+    {
+        _suppressRestore = true;
+        CloseOverlay(false);
+        _shell.OpenErrorLogFromOverlay();
+    }
+
+    private void ShellDesktopButton_Click(object sender, RoutedEventArgs e)
+    {
+        _suppressRestore = true;
+        CloseOverlay(false);
+        _shell.SwitchDesktopFromOverlay();
+    }
+
+    private void ShellPowerButton_Click(object sender, RoutedEventArgs e)
+    {
+        _suppressRestore = true;
+        CloseOverlay(false);
+        _shell.OpenPowerOptionsFromOverlay();
+    }
+
+    private void ShellHomeButton_Click(object sender, RoutedEventArgs e)
+    {
+        _suppressRestore = true;
+        CloseOverlay(false);
+        _shell.ShowGameLibraryFromOverlay();
     }
 
     private void BluetoothButton_Click(object sender, RoutedEventArgs e)
@@ -459,114 +556,62 @@ public partial class WinKeyOverlayWindow : Window
 
     private void OnNotificationCenterUpdated()
     {
-        if (_overlayOpen)
-            Dispatcher.BeginInvoke(RefreshNotifications, DispatcherPriority.Background);
+        // Overlay no longer surfaces notifications; kept as a no-op safety latch.
     }
-
-    private void RefreshNotifications()
-    {
-        var latest = NotificationCenter.Items.FirstOrDefault();
-        NotificationTitle.Text = latest is not null ? latest.Title : "No notifications";
-        NotificationMessage.Text = latest?.Message ?? string.Empty;
-    }
-
-    private void RefreshStoreFeatured()
-    {
-        var covers = _shell.VisibleGames
-            .Where(g => !g.IsHidden && !string.IsNullOrWhiteSpace(g.Cover) && File.Exists(g.Cover))
-            .Select(g => g.Cover!)
-            .ToList();
-        var cells = new[] { StoreCover1, StoreCover2, StoreCover3, StoreCover4, StoreCover5, StoreCover6 };
-        if (covers.Count == 0)
-        {
-            foreach (var cell in cells)
-                cell.Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#241414"));
-            _storeCollagePool = null;
-            return;
-        }
-        if (_storeCollagePool is not null && _storeCollagePool.SequenceEqual(covers)) return;
-        _storeCollagePool = covers;
-        var pool = new List<string>(covers);
-        var random = new Random();
-        foreach (var cell in cells)
-        {
-            var chosen = pool[random.Next(pool.Count)];
-            var image = LoadLocalImage(chosen);
-            cell.Background = image is not null
-                ? new ImageBrush(image) { Stretch = Stretch.UniformToFill }
-                : new SolidColorBrush((Color)ColorConverter.ConvertFromString("#241414"));
-        }
-    }
-
-    private List<string>? _storeCollagePool;
 
     private async Task RefreshMediaAsync()
     {
         var media = await MediaService.GetCurrentMediaAsync();
-        BitmapImage? albumArt = null;
-        if (media?.Thumbnail is not null)
-        {
-            try
-            {
-                using var stream = await media.Thumbnail.OpenReadAsync();
-                var bi = new BitmapImage();
-                bi.BeginInit();
-                bi.CacheOption = BitmapCacheOption.OnLoad;
-                bi.StreamSource = stream.AsStreamForRead();
-                bi.EndInit();
-                bi.Freeze();
-                albumArt = bi;
-            }
-            catch { }
-        }
         _ = Dispatcher.BeginInvoke(() =>
         {
-            MediaTitle.Text = media is not null ? media.Title : "No media";
-            MediaArtist.Text = media?.Artist ?? string.Empty;
+            MediaTitle.Text = media is not null ? media.Title : "Open Spotify";
+            MediaArtist.Text = media?.Artist ?? "Tap to open Spotify";
             MediaPlayButton.Content = media is { IsPlaying: true } ? "\uEDB4" : "\uEDB8";
             MediaPlayButton.Visibility = media is null ? Visibility.Collapsed : Visibility.Visible;
-            if (albumArt is not null) MediaArt.Background = new ImageBrush(albumArt);
-            else MediaArt.Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#10FFFFFF"));
+            MediaPrevButton.Visibility = media is null ? Visibility.Collapsed : Visibility.Visible;
+            MediaNextButton.Visibility = media is null ? Visibility.Collapsed : Visibility.Visible;
         }, DispatcherPriority.Background);
     }
 
-    private void UpdatePerfModeDisplay()
+    private void MediaTrackHost_Click(object sender, MouseButtonEventArgs e)
     {
-        var mode = (_shell.CurrentPerformanceMode ?? "Balanced").ToUpperInvariant();
-        PerfModeText.Text = mode;
-        var accentBrush = (Brush)FindResource("AccentBrush");
-        var defaultBrush = new SolidColorBrush(Color.FromArgb(0x18, 0xFF, 0xFF, 0xFF));
-        foreach (var btn in FindVisualChildren<Button>(this))
+        var info = Task.Run(() => MediaService.GetCurrentMediaAsync()).Result;
+        if (info?.AppName is { Length: > 0 } appId)
         {
-            if (btn.Tag is string tag && tag is "Ultimate" or "Balanced" or "Eco")
+            try
             {
-                var label = tag.ToUpperInvariant();
-                btn.Background = label == mode ? accentBrush : defaultBrush;
+                Process.Start(new ProcessStartInfo($"shell:AppsFolder\\{appId}") { UseShellExecute = true });
+                return;
             }
+            catch { }
         }
+        _shell.OpenSpotify();
     }
 
-    private static ImageSource? LoadLocalImage(string? path)
+    private static readonly string[] FavoritesPriorityNames =
     {
-        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return null;
-        if (_coverCache.TryGetValue(path, out var cached)) return cached;
-        try
-        {
-            var image = new BitmapImage();
-            image.BeginInit();
-            image.CacheOption = BitmapCacheOption.OnLoad;
-            image.CreateOptions = BitmapCreateOptions.None;
-            image.DecodePixelWidth = 256;
-            image.UriSource = new Uri(path, UriKind.Absolute);
-            image.EndInit();
-            image.Freeze();
-            _coverCache[path] = image;
-            return image;
-        }
-        catch { return null; }
-    }
+        "chrome", "edge", "firefox", "discord", "spotify", "steam", "epic",
+        "whatsapp", "telegram", "notepad", "terminal", "settings", "file explorer",
+        "email", "mail", "calculator", "photos", "word", "excel", "powerpoint"
+    };
 
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, ImageSource> _coverCache = new();
+    private void PopulateFavorites()
+    {
+        var apps = InstalledAppsCatalog.GetApps();
+        var favorites = apps
+            .OrderByDescending(a =>
+            {
+                var name = a.Name!.ToLowerInvariant();
+                for (var i = 0; i < FavoritesPriorityNames.Length; i++)
+                    if (name.Contains(FavoritesPriorityNames[i], StringComparison.OrdinalIgnoreCase))
+                        return FavoritesPriorityNames.Length - i;
+                return 0;
+            })
+            .ThenBy(a => a.Name, StringComparer.OrdinalIgnoreCase)
+            .Take(5)
+            .ToList();
+        AppsList.ItemsSource = favorites;
+    }
 
     private void RefreshCaptures()
     {
@@ -583,7 +628,7 @@ public partial class WinKeyOverlayWindow : Window
                     if (!_overlayOpen || target.Tag is not TaskWindowEntry) return;
                     target.Background = image is null
                         ? Brushes.Transparent
-                        : new ImageBrush(image) { Stretch = Stretch.UniformToFill };
+                        : new ImageBrush(image) { Stretch = Stretch.Uniform };
                 }, DispatcherPriority.Background);
             });
         }

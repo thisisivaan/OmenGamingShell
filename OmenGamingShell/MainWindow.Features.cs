@@ -386,7 +386,9 @@ public partial class MainWindow
         catch { }
     }
 
-    private void OpenSpotify_Click(object sender, RoutedEventArgs e)
+    private void OpenSpotify_Click(object sender, RoutedEventArgs e) => OpenSpotify();
+
+    internal void OpenSpotify()
     {
         try
         {

@@ -79,8 +79,6 @@ public partial class MainWindow : Window
     private bool _wifiScanInProgress;
     private IReadOnlyList<TaskWindowEntry> _altTabWindows = Array.Empty<TaskWindowEntry>();
     private int _altTabIndex;
-    private IntPtr _altTabThumbnail;
-    private readonly List<IntPtr> _altTabStripThumbnails = new();
     private bool _altTabActive;
     private IntPtr _previousForegroundWindow;
     private bool _suppressFocusRestore;
@@ -1416,9 +1414,13 @@ try
         StatusText.Text = $"UNINSTALLING {game.Name.ToUpperInvariant()}...";
         try
         {
-            // Delete the game folder, then the repack that produced it (if still present),
+            // Delete the game folder, its Windows "Apps & features" (registry) registration,
             // then purge every shell store entry so the game vanishes completely.
-            await Task.Run(() => Directory.Delete(folder, true));
+            await Task.Run(() =>
+            {
+                Directory.Delete(folder, true);
+                WindowsUninstallRegistry.RemoveForGame(game);
+            });
             var games = await Task.Run(() => GameLibrary.Load());
             _ = Dispatcher.BeginInvoke(() =>
             {
@@ -2058,7 +2060,7 @@ try
             if (wifi) { WifiNetworksList.ItemsSource = await ConnectionService.ScanWifiAsync(); CheckListBoxArrows(); }
             else
             {
-                _cachedBluetoothDevices = await Task.Run(ConnectionService.ScanBluetooth);
+                _cachedBluetoothDevices = await ConnectionService.ScanBluetoothAsync();
                 BluetoothDevicesList.ItemsSource = _cachedBluetoothDevices;
             }
             if (showStatus) StatusText.Text = "CONNECTION SCAN COMPLETE";
@@ -2071,7 +2073,7 @@ try
     {
         try
         {
-            _cachedBluetoothDevices = await Task.Run(ConnectionService.ScanBluetooth);
+            _cachedBluetoothDevices = await ConnectionService.ScanBluetoothAsync();
             BluetoothDevicesList.ItemsSource = _cachedBluetoothDevices;
         }
         catch { _cachedBluetoothDevices = Array.Empty<BluetoothDevice>(); }
@@ -2138,8 +2140,8 @@ try
         if (sender is not Button { Tag: BluetoothDevice device }) return;
         var wasConnected = device.Connected;
         bool success;
-        if (wasConnected) success = await Task.Run(() => ConnectionService.DisconnectBluetooth(device));
-        else success = await Task.Run(() => ConnectionService.ConnectBluetooth(device));
+        if (wasConnected) success = await ConnectionService.DisconnectBluetoothAsync(device);
+        else success = await ConnectionService.ConnectBluetoothAsync(device);
         ShowNotification(success
             ? wasConnected ? $"{device.Name} disconnected" : $"{device.Name} connected"
             : $"Could not {(wasConnected ? "disconnect" : "connect")} {device.Name}");
@@ -2184,7 +2186,12 @@ try
             WifiStatusIcon.Opacity = 1;
         }
 
-        var bluetoothAvailable = IsBluetoothRadioAvailable();
+        _ = UpdateBluetoothStatusAsync();
+    }
+
+    private async Task UpdateBluetoothStatusAsync()
+    {
+        var bluetoothAvailable = await IsBluetoothRadioAvailable().ConfigureAwait(true);
         BluetoothConnectionText.Text = bluetoothAvailable ? "AVAILABLE" : "NOT DETECTED";
         BluetoothConnectionText.Foreground = bluetoothAvailable ? Brushes.White : CreateFrozenBrush("#A0A0A0");
         BluetoothDetailsText.Text = bluetoothAvailable
@@ -2193,15 +2200,7 @@ try
         BluetoothStatusIcon.Opacity = bluetoothAvailable ? 1 : 0.35;
     }
 
-    internal static bool IsBluetoothRadioAvailable()
-    {
-        var parameters = new BluetoothFindRadioParams { Size = Marshal.SizeOf<BluetoothFindRadioParams>() };
-        var findHandle = BluetoothFindFirstRadio(ref parameters, out var radioHandle);
-        if (findHandle == IntPtr.Zero) return false;
-        if (radioHandle != IntPtr.Zero) CloseHandle(radioHandle);
-        BluetoothFindRadioClose(findHandle);
-        return true;
-    }
+    internal static Task<bool> IsBluetoothRadioAvailable() => ConnectionService.IsBluetoothRadioAvailableAsync();
 
     private void BackToSettingsHome_Click(object sender, RoutedEventArgs e)
     {
@@ -2674,6 +2673,76 @@ StoreEmptyText.Visibility = Visibility.Collapsed;
         Topmost = true;
         Dispatcher.BeginInvoke(() => Topmost = false, DispatcherPriority.ApplicationIdle);
         _ = OpenConnectionsAsync(wifi);
+    }
+
+    internal void RefreshGamesFromOverlay()
+    {
+        Show();
+        WindowState = WindowState.Maximized;
+        Activate();
+        Topmost = true;
+        Dispatcher.BeginInvoke(() => Topmost = false, DispatcherPriority.ApplicationIdle);
+        RefreshGames_Click(RefreshButton, new RoutedEventArgs());
+    }
+
+    internal void OpenDownloadCenterFromOverlay()
+    {
+        Show();
+        WindowState = WindowState.Maximized;
+        Activate();
+        Topmost = true;
+        Dispatcher.BeginInvoke(() => Topmost = false, DispatcherPriority.ApplicationIdle);
+        OpenDownloadCenter();
+    }
+
+    internal void OpenSettingsFromOverlay()
+    {
+        Show();
+        WindowState = WindowState.Maximized;
+        Activate();
+        Topmost = true;
+        Dispatcher.BeginInvoke(() => Topmost = false, DispatcherPriority.ApplicationIdle);
+        Settings_Click(SettingsButton, new RoutedEventArgs());
+    }
+
+    internal void OpenErrorLogFromOverlay()
+    {
+        Show();
+        WindowState = WindowState.Maximized;
+        Activate();
+        Topmost = true;
+        Dispatcher.BeginInvoke(() => Topmost = false, DispatcherPriority.ApplicationIdle);
+        ErrorLog_Click(ErrorLogButton, new RoutedEventArgs());
+    }
+
+    internal void SwitchDesktopFromOverlay()
+    {
+        Show();
+        WindowState = WindowState.Maximized;
+        Activate();
+        Topmost = true;
+        Dispatcher.BeginInvoke(() => Topmost = false, DispatcherPriority.ApplicationIdle);
+        DesktopMode_Click(DesktopModeButton, new RoutedEventArgs());
+    }
+
+    internal void OpenPowerOptionsFromOverlay()
+    {
+        Show();
+        WindowState = WindowState.Maximized;
+        Activate();
+        Topmost = true;
+        Dispatcher.BeginInvoke(() => Topmost = false, DispatcherPriority.ApplicationIdle);
+        PowerOptions_Click(PowerButton, new RoutedEventArgs());
+    }
+
+    internal void ShowGameLibraryFromOverlay()
+    {
+        Show();
+        WindowState = WindowState.Maximized;
+        Activate();
+        Topmost = true;
+        Dispatcher.BeginInvoke(() => Topmost = false, DispatcherPriority.ApplicationIdle);
+        ShowHomePage();
     }
 
     private void OpenSearchFromHome()
@@ -3565,12 +3634,7 @@ private static List<TaskWindowEntry> GetTaskWindows(IntPtr shellHandle)
         AltTabStripList.ItemsSource = _altTabWindows;
         AltTabOverlay.Visibility = Visibility.Visible;
         UpdateAltTabSelection();
-        Dispatcher.BeginInvoke(() =>
-        {
-            UpdateLayout();
-            RegisterAltTabStripThumbnails();
-            UpdateAltTabStripHighlight();
-        }, DispatcherPriority.Loaded);
+        Dispatcher.BeginInvoke(RefreshAltTabCaptures, DispatcherPriority.Loaded);
     }
 
     private void CompleteAltTab()
@@ -3593,7 +3657,7 @@ private static List<TaskWindowEntry> GetTaskWindows(IntPtr shellHandle)
         var window = _altTabWindows[_altTabIndex];
         AltTabWindowTitle.Text = window.Title;
         AltTabWindowProcess.Text = window.ProcessName;
-        RegisterAltTabThumbnail(window);
+        RefreshAltTabPreview(window);
         UpdateAltTabStripHighlight();
     }
 
@@ -3614,90 +3678,49 @@ private static List<TaskWindowEntry> GetTaskWindows(IntPtr shellHandle)
         }
     }
 
-    private void RegisterAltTabStripThumbnails()
+    private void RefreshAltTabPreview(TaskWindowEntry window)
     {
-        foreach (var thumbnail in _altTabStripThumbnails) DwmUnregisterThumbnail(thumbnail);
-        _altTabStripThumbnails.Clear();
-        var destination = new WindowInteropHelper(this).Handle;
-        var dpi = VisualTreeHelper.GetDpi(this);
-        foreach (var preview in FindVisualChildren<Border>(AltTabStripList)
-                     .Where(border => border.Tag is TaskWindowEntry && border.IsVisible))
+        _ = Task.Run(async () =>
         {
-            var window = (TaskWindowEntry)preview.Tag;
-            if (DwmRegisterThumbnail(destination, window.Handle, out var thumbnail) != 0 || thumbnail == IntPtr.Zero)
-                continue;
-            var properties = new DwmThumbnailProperties
+            var image = window.Capture();
+            await Dispatcher.InvokeAsync(() =>
             {
-                Flags = 0x1 | 0x4 | 0x8 | 0x10,
-                Destination = GetThumbnailRect16To9(preview, dpi.DpiScaleX, dpi.DpiScaleY),
-                Opacity = 255,
-                Visible = true,
-                SourceClientAreaOnly = true
-            };
-            DwmUpdateThumbnailProperties(thumbnail, ref properties);
-            _altTabStripThumbnails.Add(thumbnail);
-        }
+                if (!_altTabActive || AltTabOverlay.Visibility != Visibility.Visible) return;
+                AltTabPreview.Background = image is null
+                    ? Brushes.Transparent
+                    : new ImageBrush(image) { Stretch = Stretch.Uniform };
+            }, DispatcherPriority.Background);
+        });
     }
 
-    private NativeRect GetThumbnailRect16To9(FrameworkElement target, double dpiScaleX, double dpiScaleY)
+    private void RefreshAltTabCaptures()
     {
-        var point = target.TransformToAncestor(this).Transform(new Point(0, 0));
-        var w = target.ActualWidth;
-        var h = target.ActualHeight;
-        const double ratio = 16.0 / 9.0;
-        double nw, nh;
-        if (w / h > ratio)
+        UpdateLayout();
+        if (AltTabOverlay.Visibility != Visibility.Visible) return;
+        var previews = FindVisualChildren<Border>(AltTabStripList)
+            .Where(border => border.Name == "AltTabStripThumb").ToList();
+        foreach (var preview in previews)
         {
-            nw = h * ratio;
-            nh = h;
-        }
-        else
-        {
-            nw = w;
-            nh = w / ratio;
-        }
-        return new NativeRect
-        {
-            Left = (int)Math.Round((point.X + (w - nw) / 2) * dpiScaleX),
-            Top = (int)Math.Round((point.Y + (h - nh) / 2) * dpiScaleY),
-            Right = (int)Math.Round((point.X + (w + nw) / 2) * dpiScaleX),
-            Bottom = (int)Math.Round((point.Y + (h + nh) / 2) * dpiScaleY)
-        };
-    }
-
-    private void RegisterAltTabThumbnail(TaskWindowEntry window)
-    {
-        if (_altTabThumbnail != IntPtr.Zero) DwmUnregisterThumbnail(_altTabThumbnail);
-        _altTabThumbnail = IntPtr.Zero;
-        var destination = new WindowInteropHelper(this).Handle;
-        if (DwmRegisterThumbnail(destination, window.Handle, out var thumbnail) != 0 || thumbnail == IntPtr.Zero)
-            return;
-        var dpi = VisualTreeHelper.GetDpi(this);
-        var point = AltTabPreview.TransformToAncestor(this).Transform(new Point(0, 0));
-        var properties = new DwmThumbnailProperties
-        {
-            Flags = 0x1 | 0x4 | 0x8 | 0x10,
-            Destination = new NativeRect
+            if (preview.Tag is not TaskWindowEntry window) continue;
+            var target = preview;
+            _ = Task.Run(async () =>
             {
-                Left = (int)Math.Round(point.X * dpi.DpiScaleX),
-                Top = (int)Math.Round(point.Y * dpi.DpiScaleY),
-                Right = (int)Math.Round((point.X + AltTabPreview.ActualWidth) * dpi.DpiScaleX),
-                Bottom = (int)Math.Round((point.Y + AltTabPreview.ActualHeight) * dpi.DpiScaleY)
-            },
-            Opacity = 255,
-            Visible = true,
-            SourceClientAreaOnly = true
-        };
-        DwmUpdateThumbnailProperties(thumbnail, ref properties);
-        _altTabThumbnail = thumbnail;
+                var image = window.Capture();
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    if (!_altTabActive || target.Tag is not TaskWindowEntry ||
+                        AltTabOverlay.Visibility != Visibility.Visible) return;
+                    target.Background = image is null
+                        ? Brushes.Transparent
+                        : new ImageBrush(image) { Stretch = Stretch.Uniform };
+                }, DispatcherPriority.Background);
+            });
+        }
+        UpdateAltTabStripHighlight();
     }
 
     private void CloseAltTabOverlay()
     {
-        if (_altTabThumbnail != IntPtr.Zero) DwmUnregisterThumbnail(_altTabThumbnail);
-        _altTabThumbnail = IntPtr.Zero;
-        foreach (var thumbnail in _altTabStripThumbnails) DwmUnregisterThumbnail(thumbnail);
-        _altTabStripThumbnails.Clear();
         AltTabStripList.ItemsSource = null;
         AltTabOverlay.Visibility = Visibility.Collapsed;
         _altTabActive = false;

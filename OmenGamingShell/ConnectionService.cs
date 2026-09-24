@@ -4,6 +4,9 @@ using System.Runtime.InteropServices;
 using System.Security;
 using System.Text;
 using System.Text.RegularExpressions;
+using Windows.Devices.Bluetooth;
+using Windows.Devices.Enumeration;
+using Windows.Devices.Radios;
 
 namespace OmenGamingShell;
 
@@ -126,99 +129,124 @@ public static class ConnectionService
 
     public static Task DisconnectWifiAsync() => RunCheckedAsync("netsh.exe", "wlan disconnect");
 
-    public static IReadOnlyList<BluetoothDevice> ScanBluetooth()
+    public static async Task<IReadOnlyList<BluetoothDevice>> ScanBluetoothAsync()
     {
         var devices = new List<BluetoothDevice>();
         try
         {
-            var radioParams = new BluetoothFindRadioParams { Size = Marshal.SizeOf<BluetoothFindRadioParams>() };
-            var radioSearch = BluetoothFindFirstRadio(ref radioParams, out var radio);
-            if (radioSearch != IntPtr.Zero)
+            var radios = await Radio.GetRadiosAsync();
+            if (radios is null || !radios.Any(r => r.Kind == RadioKind.Bluetooth)) return devices;
+            var items = await DeviceInformation.FindAllAsync(Windows.Devices.Bluetooth.BluetoothDevice.GetDeviceSelector(),
+                new List<string> { "System.Devices.Aep.Connected", "System.ItemNameDisplay" });
+            foreach (var item in items)
             {
-                try
-                {
-                    ScanRadioForDevices(radio, devices);
-                }
-                finally { if (radio != IntPtr.Zero) CloseHandle(radio); }
-
-                while (BluetoothFindNextRadio(radioSearch, out radio))
-                {
-                    try
-                    {
-                        ScanRadioForDevices(radio, devices);
-                    }
-                    finally { if (radio != IntPtr.Zero) CloseHandle(radio); }
-                }
+                var name = item.Properties.TryGetValue("System.ItemNameDisplay", out var display)
+                    ? display as string : item.Name;
+                if (string.IsNullOrWhiteSpace(name)) continue;
+                var connected = false;
+                if (item.Properties.TryGetValue("System.Devices.Aep.Connected", out var connectedValue) && connectedValue is bool isConnected)
+                    connected = isConnected;
+                var paired = item.Pairing?.IsPaired == true;
+                var address = TryResolveAddress(item.Id);
+                devices.Add(new BluetoothDevice(address, name, connected, paired, item.Id));
             }
-            BluetoothFindRadioClose(radioSearch);
         }
         catch { }
         return devices;
     }
 
-    private static void ScanRadioForDevices(IntPtr radio, List<BluetoothDevice> devices)
+    private static ulong TryResolveAddress(string deviceId)
     {
-        if (radio == IntPtr.Zero) return;
-        var searchParams = new BluetoothDeviceSearchParams
-        {
-            Size = Marshal.SizeOf<BluetoothDeviceSearchParams>(),
-            ReturnAuthenticated = true,
-            ReturnRemembered = true,
-            ReturnConnected = true,
-            Radio = radio
-        };
-        var info = new BluetoothDeviceInfo { Size = Marshal.SizeOf<BluetoothDeviceInfo>() };
-        var deviceFind = BluetoothFindFirstDevice(ref searchParams, ref info);
-        if (deviceFind == IntPtr.Zero) return;
         try
         {
-            do
+            var marker = deviceId.IndexOf("Bluetooth#Bluetooth", StringComparison.OrdinalIgnoreCase);
+            if (marker < 0)
             {
-                if (!string.IsNullOrEmpty(info.Name))
-                    devices.Add(new BluetoothDevice(info.Address, info.Name, info.Connected, info.Remembered || info.Authenticated));
-            } while (BluetoothFindNextDevice(deviceFind, ref info));
+                marker = deviceId.IndexOf("BluetoothLE#BluetoothLE", StringComparison.OrdinalIgnoreCase);
+                if (marker < 0) return 0;
+            }
+            var skip = deviceId[marker..].IndexOf('#') + 1;
+            var rest = deviceId[(marker + skip)..];
+            var end = rest.IndexOf('-');
+            var mac = (end > 0 ? rest[..end] : rest).Replace(":", "").Replace("-", "");
+            if (!ulong.TryParse(mac, System.Globalization.NumberStyles.HexNumber, null, out var value) || mac.Length != 12)
+                return 0;
+            var bytes = BitConverter.GetBytes(value);
+            Array.Reverse(bytes, 0, 6);
+            return BitConverter.ToUInt64(bytes, 0);
         }
-        finally { BluetoothFindDeviceClose(deviceFind); }
+        catch { return 0; }
     }
 
-    public static bool ConnectBluetooth(BluetoothDevice device)
+    public static async Task<bool> ConnectBluetoothAsync(BluetoothDevice device)
     {
-        if (device.Connected) return true;
-
-        var audioEnabled = SetBluetoothAudioServices(device, BluetoothServiceEnable);
-
-        var pnpResult = SetBluetoothPnpDevice(device, enable: true);
-
-        return audioEnabled || pnpResult;
-    }
-
-    public static bool DisconnectBluetooth(BluetoothDevice device)
-    {
-        if (!device.Connected) return true;
-
-        SetBluetoothAudioServices(device, BluetoothServiceDisable);
-
-        var pnpResult = SetBluetoothPnpDevice(device, enable: false);
-
-        return pnpResult;
-    }
-
-    private static bool SetBluetoothPnpDevice(BluetoothDevice device, bool enable)
-    {
-        var instanceId = ResolveInstanceId(device);
-        if (string.IsNullOrEmpty(instanceId)) return false;
         try
         {
-            var action = enable ? "Enable-PnpDevice" : "Disable-PnpDevice";
-            using var process = Process.Start(new ProcessStartInfo("powershell.exe")
+            var radios = await Radio.GetRadiosAsync();
+            if (radios is not null)
             {
-                UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true,
-                CreateNoWindow = true,
-                Arguments = $"-NoProfile -NonInteractive -Command \"{action} -InstanceId '{EscapePowerShell(instanceId)}' -Confirm:$false\""
-            });
-            if (process is null) return false;
-            process.WaitForExit(10000);
-            return process.ExitCode == 0;
+                var bluetoothRadio = radios.FirstOrDefault(r => r.Kind == RadioKind.Bluetooth);
+                if (bluetoothRadio is not null && bluetoothRadio.State != RadioState.On)
+                    await bluetoothRadio.SetStateAsync(RadioState.On);
+            }
+
+            var item = await DeviceInformation.CreateFromIdAsync(device.InstanceId);
+            if (item is null) return false;
+
+            if (!item.Pairing.IsPaired)
+            {
+                var result = await item.Pairing.PairAsync(DevicePairingProtectionLevel.Default);
+                if (result.Status is not DevicePairingResultStatus.Paired
+                    and not DevicePairingResultStatus.AlreadyPaired) return false;
+            }
+
+            SetBluetoothAudioServices(device, BluetoothServiceEnable);
+            return true;
+        }
+        catch { return false; }
+    }
+
+    public static Task<bool> DisconnectBluetoothAsync(BluetoothDevice device)
+    {
+        try
+        {
+            return Task.FromResult(SetBluetoothAudioServices(device, BluetoothServiceDisable));
+        }
+        catch { return Task.FromResult(false); }
+    }
+
+    public static async Task<bool> PairBluetoothAsync(BluetoothDevice device)
+    {
+        try
+        {
+            var item = await DeviceInformation.CreateFromIdAsync(device.InstanceId);
+            if (item is null) return false;
+            if (item.Pairing.IsPaired) return true;
+            var result = await item.Pairing.PairAsync(DevicePairingProtectionLevel.Default);
+            return result.Status is DevicePairingResultStatus.Paired or DevicePairingResultStatus.AlreadyPaired;
+        }
+        catch { return false; }
+    }
+
+    public static async Task<bool> RemoveBluetoothAsync(BluetoothDevice device)
+    {
+        try
+        {
+            var item = await DeviceInformation.CreateFromIdAsync(device.InstanceId);
+            if (item is null) return false;
+            if (!item.Pairing.IsPaired) return true;
+            var result = await item.Pairing.UnpairAsync();
+            return result.Status is DeviceUnpairingResultStatus.Unpaired or DeviceUnpairingResultStatus.AlreadyUnpaired;
+        }
+        catch { return false; }
+    }
+
+    public static async Task<bool> IsBluetoothRadioAvailableAsync()
+    {
+        try
+        {
+            var radios = await Radio.GetRadiosAsync();
+            return radios is not null && radios.Any(r => r.Kind == RadioKind.Bluetooth);
         }
         catch { return false; }
     }
@@ -251,45 +279,6 @@ public static class ConnectionService
         finally { if (radio != IntPtr.Zero) CloseHandle(radio); if (search != IntPtr.Zero) BluetoothFindRadioClose(search); }
     }
 
-    private static string? ResolveInstanceId(BluetoothDevice device)
-    {
-        if (!string.IsNullOrEmpty(device.InstanceId)) return device.InstanceId;
-        try
-        {
-            using var process = Process.Start(new ProcessStartInfo("powershell.exe")
-            {
-                UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true,
-                CreateNoWindow = true,
-                Arguments = $"-NoProfile -NonInteractive -Command \"(Get-PnpDevice -Class Bluetooth -ErrorAction SilentlyContinue | Where-Object {{ $_.FriendlyName -eq '{EscapePowerShell(device.Name)}' }}).InstanceId\""
-            });
-            if (process is null) return null;
-            var output = process.StandardOutput.ReadToEnd().Trim();
-            process.WaitForExit(5000);
-            return string.IsNullOrEmpty(output) ? null : output;
-        }
-        catch { return null; }
-    }
-
-    public static bool PairBluetooth(IntPtr parent, BluetoothDevice device)
-    {
-        var radio = OpenRadio(out var search);
-        try
-        {
-            if (radio == IntPtr.Zero) return false;
-            var info = new BluetoothDeviceInfo { Size = Marshal.SizeOf<BluetoothDeviceInfo>(), Address = device.Address, Name = device.Name };
-            return BluetoothAuthenticateDeviceEx(parent, radio, ref info, IntPtr.Zero, 0) == 0;
-        }
-        finally { if (radio != IntPtr.Zero) CloseHandle(radio); if (search != IntPtr.Zero) BluetoothFindRadioClose(search); }
-    }
-
-    public static bool RemoveBluetooth(BluetoothDevice device)
-    {
-        var address = device.Address;
-        return BluetoothRemoveDevice(ref address) == 0;
-    }
-
-    private static string EscapePowerShell(string value) => value.Replace("'", "''");
-
     private static IntPtr OpenRadio(out IntPtr search)
     {
         var parameters = new BluetoothFindRadioParams { Size = Marshal.SizeOf<BluetoothFindRadioParams>() };
@@ -310,32 +299,8 @@ public static class ConnectionService
     private static async Task RunCheckedAsync(string file, string arguments) => _ = await RunAsync(file, arguments);
 
     [StructLayout(LayoutKind.Sequential)] private struct BluetoothFindRadioParams { public int Size; }
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct BluetoothDeviceInfo
-    {
-        public int Size; public ulong Address; public uint ClassOfDevice;
-        [MarshalAs(UnmanagedType.Bool)] public bool Connected;
-        [MarshalAs(UnmanagedType.Bool)] public bool Remembered;
-        [MarshalAs(UnmanagedType.Bool)] public bool Authenticated;
-        public SystemTime LastSeen, LastUsed;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 248)] public string Name;
-    }
-    [StructLayout(LayoutKind.Sequential)] private struct SystemTime { public ushort Year, Month, DayOfWeek, Day, Hour, Minute, Second, Milliseconds; }
-    [StructLayout(LayoutKind.Sequential)]
-    private struct BluetoothDeviceSearchParams
-    {
-        public int Size;
-        [MarshalAs(UnmanagedType.Bool)] public bool ReturnAuthenticated, ReturnRemembered, ReturnUnknown, ReturnConnected, IssueInquiry;
-        public byte TimeoutMultiplier; public IntPtr Radio;
-    }
     [DllImport("BluetoothApis.dll")] private static extern IntPtr BluetoothFindFirstRadio(ref BluetoothFindRadioParams parameters, out IntPtr radio);
-    [DllImport("BluetoothApis.dll")] private static extern bool BluetoothFindNextRadio(IntPtr find, out IntPtr radio);
     [DllImport("BluetoothApis.dll")] private static extern bool BluetoothFindRadioClose(IntPtr find);
-    [DllImport("BluetoothApis.dll", CharSet = CharSet.Unicode)] private static extern IntPtr BluetoothFindFirstDevice(ref BluetoothDeviceSearchParams search, ref BluetoothDeviceInfo info);
-    [DllImport("BluetoothApis.dll", CharSet = CharSet.Unicode)] private static extern bool BluetoothFindNextDevice(IntPtr find, ref BluetoothDeviceInfo info);
-    [DllImport("BluetoothApis.dll")] private static extern bool BluetoothFindDeviceClose(IntPtr find);
-    [DllImport("BluetoothApis.dll", CharSet = CharSet.Unicode)] private static extern uint BluetoothAuthenticateDeviceEx(IntPtr parent, IntPtr radio, ref BluetoothDeviceInfo info, IntPtr callback, int requirement);
-    [DllImport("BluetoothApis.dll")] private static extern uint BluetoothRemoveDevice(ref ulong address);
     [DllImport("BluetoothApis.dll")] private static extern uint BluetoothEnumerateInstalledServices(IntPtr radio, ref ulong address, ref uint serviceCount, Guid[]? serviceGuids);
     [DllImport("BluetoothApis.dll")] private static extern uint BluetoothSetServiceState(IntPtr radio, ref ulong address, ref Guid serviceGuid, uint flags);
     [DllImport("kernel32.dll")] private static extern bool CloseHandle(IntPtr handle);
