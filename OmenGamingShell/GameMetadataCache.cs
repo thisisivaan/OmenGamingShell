@@ -66,7 +66,7 @@ public static class GameMetadataCache
             }
 
             Directory.CreateDirectory(MetadataFolder);
-            var temporaryPath = IndexPath + ".tmp";
+            var temporaryPath = Path.Combine(MetadataFolder, $"games-metadata-{Guid.NewGuid():N}.tmp");
             File.WriteAllText(temporaryPath, JsonSerializer.Serialize(records, Options));
             File.Move(temporaryPath, IndexPath, true);
         }
@@ -97,7 +97,7 @@ public static class GameMetadataCache
             }
 
             Directory.CreateDirectory(MetadataFolder);
-            var temporaryPath = IndexPath + ".tmp";
+            var temporaryPath = Path.Combine(MetadataFolder, $"games-metadata-{Guid.NewGuid():N}.tmp");
             File.WriteAllText(temporaryPath, JsonSerializer.Serialize(records, Options));
             File.Move(temporaryPath, IndexPath, true);
         }

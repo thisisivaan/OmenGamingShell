@@ -512,13 +512,13 @@
                                     </Grid.ColumnDefinitions>
                                     <TextBlock Text="&#xE767;" FontFamily="Segoe Fluent Icons" FontSize="13" Foreground="#707070" VerticalAlignment="Center" Margin="0,0,6,0" IsHitTestVisible="False" />
                                     <Grid Grid.Column="1" x:Name="VolumeBarTrack" VerticalAlignment="Center" IsHitTestVisible="False">
-                                        <Border Height="8" Background="#303030" CornerRadius="4" />
-                                        <Border x:Name="VolumeBarFill" Height="8" Background="#FF003C" CornerRadius="4"
+                                        <Border Height="4" Background="#26FFFFFF" CornerRadius="2" />
+                                        <Border x:Name="VolumeBarFill" Height="4" Background="#FF003C" CornerRadius="2"
                                                 HorizontalAlignment="Left" Width="0" />
-                                        <Ellipse x:Name="VolumeThumb" Width="13" Height="13" Fill="#FF003C" Stroke="#22000000" StrokeThickness="1"
-                                                 HorizontalAlignment="Left" VerticalAlignment="Center" Margin="-6.5,0,0,0">
+                                        <Ellipse x:Name="VolumeThumb" Width="12" Height="12" Fill="White" Stroke="#22000000" StrokeThickness="1"
+                                                 HorizontalAlignment="Left" VerticalAlignment="Center" Margin="-6,0,0,0">
                                             <Ellipse.Effect>
-                                                <DropShadowEffect BlurRadius="8" ShadowDepth="1" Opacity="0.5" Color="#000000" />
+                                                <DropShadowEffect BlurRadius="8" ShadowDepth="1" Opacity="0.55" Color="#000000" />
                                             </Ellipse.Effect>
                                         </Ellipse>
                                     </Grid>
@@ -538,13 +538,13 @@
                                     </Grid.ColumnDefinitions>
                                     <TextBlock Text="&#xE706;" FontFamily="Segoe Fluent Icons" FontSize="13" Foreground="#707070" VerticalAlignment="Center" Margin="0,0,6,0" IsHitTestVisible="False" />
                                     <Grid Grid.Column="1" x:Name="BrightnessBarTrack" VerticalAlignment="Center" IsHitTestVisible="False">
-                                        <Border Height="8" Background="#303030" CornerRadius="4" />
-                                        <Border x:Name="BrightnessBarFill" Height="8" Background="#FFC928" CornerRadius="4"
+                                        <Border Height="4" Background="#26FFFFFF" CornerRadius="2" />
+                                        <Border x:Name="BrightnessBarFill" Height="4" Background="#FF003C" CornerRadius="2"
                                                 HorizontalAlignment="Left" Width="0" />
-                                        <Ellipse x:Name="BrightnessThumb" Width="13" Height="13" Fill="#FFC928" Stroke="#22000000" StrokeThickness="1"
-                                                 HorizontalAlignment="Left" VerticalAlignment="Center" Margin="-6.5,0,0,0">
+                                        <Ellipse x:Name="BrightnessThumb" Width="12" Height="12" Fill="White" Stroke="#22000000" StrokeThickness="1"
+                                                 HorizontalAlignment="Left" VerticalAlignment="Center" Margin="-6,0,0,0">
                                             <Ellipse.Effect>
-                                                <DropShadowEffect BlurRadius="8" ShadowDepth="1" Opacity="0.5" Color="#000000" />
+                                                <DropShadowEffect BlurRadius="8" ShadowDepth="1" Opacity="0.55" Color="#000000" />
                                             </Ellipse.Effect>
                                         </Ellipse>
                                     </Grid>
@@ -860,19 +860,6 @@
             </Border>
         </Grid>
 
-        <Border x:Name="NotificationToast" Grid.RowSpan="3" HorizontalAlignment="Center" VerticalAlignment="Top"
-                Margin="0,62,0,0" CornerRadius="18" Padding="22,12"
-                MaxWidth="640" Visibility="Collapsed" IsHitTestVisible="True"
-                Cursor="Hand" MouseLeftButtonDown="NotificationToast_Click">
-            <Border.Background>
-                <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
-                    <GradientStop Color="#F2420C0C" Offset="0" />
-                    <GradientStop Color="#F20B0B0B" Offset="1" />
-                </LinearGradientBrush>
-            </Border.Background>
-            <TextBlock x:Name="NotificationText" FontSize="14" TextWrapping="Wrap" TextAlignment="Center" />
-        </Border>
-
         <Border x:Name="ControllerGuideBar" Grid.RowSpan="3" HorizontalAlignment="Center" VerticalAlignment="Bottom"
                 Margin="0,0,0,28" Background="#D91A1A1A" CornerRadius="20" Padding="16,8"
                 Visibility="Collapsed" IsHitTestVisible="False">
@@ -983,7 +970,7 @@
                         <Grid>
                         <ListBox x:Name="WifiNetworksList" Height="340" ScrollViewer.VerticalScrollBarVisibility="Auto"
                                  ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.CanContentScroll="True">
-                            <ListBox.ItemTemplate><DataTemplate><Grid Width="650" Margin="4"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="140"/><ColumnDefinition Width="145"/></Grid.ColumnDefinitions><TextBlock Text="{Binding Name}" FontSize="15" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/><TextBlock Grid.Column="1" Text="{Binding Summary}" Foreground="#999" VerticalAlignment="Center"/><Button Grid.Column="2" Style="{StaticResource LibraryFilterButton}" Content="{Binding ActionLabel}" Tag="{Binding}" Height="36" Margin="5,0,0,0" Padding="10,5" FontSize="11" Click="WifiNetworkAction_Click"/></Grid></DataTemplate></ListBox.ItemTemplate>
+                            <ListBox.ItemTemplate><DataTemplate><Grid Width="650" Margin="4"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="127"/><ColumnDefinition Width="145"/><ColumnDefinition Width="100"/></Grid.ColumnDefinitions><TextBlock Text="{Binding Name}" FontSize="15" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/><TextBlock Grid.Column="1" Text="{Binding Summary}" Foreground="#999" VerticalAlignment="Center"/><Button Grid.Column="2" Style="{StaticResource LibraryFilterButton}" Content="{Binding ActionLabel}" Tag="{Binding}" Height="36" Margin="5,0,0,0" Padding="10,5" FontSize="11" Click="WifiNetworkAction_Click"/><Button Grid.Column="3" Style="{StaticResource LibraryFilterButton}" Content="FORGET" Tag="{Binding}" Height="36" Margin="5,0,0,0" Padding="8,5" FontSize="10" Click="WifiNetworkForget_Click" Visibility="{Binding CanForget, Converter={StaticResource BoolToVisConverter}}"/></Grid></DataTemplate></ListBox.ItemTemplate>
                         </ListBox>
                         <TextBlock x:Name="WifiScrollArrow" Text="&#x25BC;" FontSize="10" Foreground="#40FFFFFF" HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,2" Visibility="Collapsed" />
                         </Grid>
@@ -998,7 +985,7 @@
                         <TextBlock Text="BLUETOOTH DEVICES" FontFamily="Segoe UI Variable Display" FontSize="24" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,0,0,20" />
                         <Grid>
                         <ListBox x:Name="BluetoothDevicesList" Height="400" ScrollViewer.VerticalScrollBarVisibility="Auto" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
-                            <ListBox.ItemTemplate><DataTemplate><Grid Width="650" Margin="4"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="140"/><ColumnDefinition Width="145"/></Grid.ColumnDefinitions><TextBlock Text="{Binding Name}" FontSize="15" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/><TextBlock Grid.Column="1" Text="{Binding Summary}" Foreground="#999" VerticalAlignment="Center"/><Button Grid.Column="2" Style="{StaticResource LibraryFilterButton}" Content="{Binding ActionLabel}" Tag="{Binding}" Height="36" Margin="5,0,0,0" Padding="10,5" FontSize="11" Click="BluetoothDeviceAction_Click"/></Grid></DataTemplate></ListBox.ItemTemplate>
+                            <ListBox.ItemTemplate><DataTemplate><Grid Width="650" Margin="4"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="127"/><ColumnDefinition Width="145"/><ColumnDefinition Width="100"/></Grid.ColumnDefinitions><TextBlock Text="{Binding Name}" FontSize="15" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/><TextBlock Grid.Column="1" Text="{Binding Summary}" Foreground="#999" VerticalAlignment="Center"/><Button Grid.Column="2" Style="{StaticResource LibraryFilterButton}" Content="{Binding ActionLabel}" Tag="{Binding}" Height="36" Margin="5,0,0,0" Padding="10,5" FontSize="11" Click="BluetoothDeviceAction_Click"/><Button Grid.Column="3" Style="{StaticResource LibraryFilterButton}" Content="FORGET" Tag="{Binding}" Height="36" Margin="5,0,0,0" Padding="8,5" FontSize="10" Click="BluetoothDeviceForget_Click" Visibility="{Binding CanForget, Converter={StaticResource BoolToVisConverter}}"/></Grid></DataTemplate></ListBox.ItemTemplate>
                         </ListBox>
                         <TextBlock x:Name="BluetoothScrollArrow" Text="&#x25BC;" FontSize="10" Foreground="#40FFFFFF" HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,2" Visibility="Collapsed" />
                         </Grid>

@@ -1,21 +1,71 @@
 using System.Diagnostics;
 using System.IO;
+using System.Windows;
 using System.Windows.Threading;
 
 namespace OmenGamingShell;
 
 public partial class App : System.Windows.Application
 {
+    private SingleInstance? _instance;
+    private OmenKeyWatcher? _omenKey;
+
     protected override void OnStartup(System.Windows.StartupEventArgs e)
     {
         DispatcherUnhandledException += HandleCrash;
         AppDomain.CurrentDomain.UnhandledException += (_, args) =>
             WriteCrash(args.ExceptionObject as Exception ?? new Exception("Unknown fatal error"));
         base.OnStartup(e);
+
+        _instance = new SingleInstance();
+        if (!_instance.IsPrimary)
+        {
+            SingleInstance.SignalPrimary();
+            Shutdown();
+            return;
+        }
+
         EnsureFirewallRule();
         System.Windows.Window shell = SetupStateStore.IsSetupComplete() ? new MainWindow() : new SetupWindow();
         MainWindow = shell;
         shell.Show();
+
+        _instance.Listen(RaiseShell);
+        _omenKey = new OmenKeyWatcher();
+        _omenKey.TryStart(OnOmenKeyPressed);
+    }
+
+    protected override void OnExit(System.Windows.ExitEventArgs e)
+    {
+        _omenKey?.Dispose();
+        _instance?.Dispose();
+        base.OnExit(e);
+    }
+
+    private void OnOmenKeyPressed()
+    {
+        RaiseShell();
+        _ = Task.Run(OmenHubSuppressor.Suppress);
+    }
+
+    private void RaiseShell()
+    {
+        void Raise()
+        {
+            try
+            {
+                if (MainWindow is MainWindow shell) shell.RaiseToFront();
+                else if (MainWindow is not null)
+                {
+                    MainWindow.Show();
+                    MainWindow.Activate();
+                }
+            }
+            catch { }
+        }
+
+        if (Dispatcher.CheckAccess()) Raise();
+        else Dispatcher.BeginInvoke(Raise);
     }
 
     private static void EnsureFirewallRule()

@@ -6,7 +6,7 @@ using System.Windows.Threading;
 
 namespace OmenGamingShell;
 
-public partial class VolumeBrightnessOsd : Window
+public partial class ToastOverlay : Window
 {
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool SetWindowPos(IntPtr window, IntPtr after, int x, int y, int cx, int cy, uint flags);
@@ -24,45 +24,34 @@ public partial class VolumeBrightnessOsd : Window
     private const uint SWP_NOSIZE = 0x0001;
     private const uint SWP_NOMOVE = 0x0002;
     private const uint SWP_NOACTIVATE = 0x0010;
+    private const uint SWP_SHOWWINDOW = 0x0040;
     private const int GWL_EXSTYLE = -20;
     private const int WS_EX_TOPMOST = 0x00000008;
     private const int WS_EX_TOOLWINDOW = 0x00000080;
     private const int WS_EX_NOACTIVATE = 0x08000000;
 
-    internal static bool IsDisplaying { get; private set; }
+    private readonly DispatcherTimer _hideTimer = new() { Interval = TimeSpan.FromSeconds(4) };
+    private readonly DispatcherTimer _topmostTimer = new() { Interval = TimeSpan.FromMilliseconds(400) };
+    private Action? _onClick;
 
-    private readonly DispatcherTimer _hideTimer = new() { Interval = TimeSpan.FromMilliseconds(1400) };
-    private readonly DispatcherTimer _topmostTimer = new() { Interval = TimeSpan.FromMilliseconds(150) };
-
-    public VolumeBrightnessOsd()
+    public ToastOverlay()
     {
         InitializeComponent();
-        _hideTimer.Tick += (_, _) => { _hideTimer.Stop(); Hide(); };
+        _hideTimer.Tick += (_, _) => HideToast();
         _topmostTimer.Tick += (_, _) => EnsureTopmost();
-        IsVisibleChanged += (_, _) =>
-        {
-            if (!IsVisible)
-            {
-                IsDisplaying = false;
-                _topmostTimer.Stop();
-            }
-        };
     }
 
-    public void ShowOsd(int percent, bool isBrightness)
+    public void ShowToast(string message, Action? onClick = null)
     {
-        OsdIcon.Text = isBrightness ? "\uE706" : "\uE767";
-        OsdLabel.Text = isBrightness ? "BRIGHTNESS" : "VOLUME";
-        OsdPercent.Text = $"{percent}%";
+        ToastText.Text = message.ToUpperInvariant();
+        _onClick = onClick;
 
-        if (!IsVisible) Show();
-        UpdateLayout();
+        if (!IsVisible)
+        {
+            Show();
+            UpdateLayout();
+        }
         PositionAtTopCenter();
-
-        var trackWidth = OsdCard.ActualWidth - 76;
-        if (trackWidth <= 0) trackWidth = 200;
-        OsdBar.Width = trackWidth * Math.Clamp(percent, 0, 100) / 100.0;
-        IsDisplaying = true;
         EnsureTopmost();
         _hideTimer.Stop();
         _hideTimer.Start();
@@ -71,6 +60,7 @@ public partial class VolumeBrightnessOsd : Window
 
     private void EnsureTopmost()
     {
+        if (VolumeBrightnessOsd.IsDisplaying) return;
         var handle = new WindowInteropHelper(this).Handle;
         if (handle == IntPtr.Zero) return;
         SetWindowPos(handle, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
@@ -97,5 +87,20 @@ public partial class VolumeBrightnessOsd : Window
         var area = SystemParameters.WorkArea;
         Left = area.Left + (area.Width - Width) / 2;
         Top = area.Top + 48;
+    }
+
+    private void ToastOverlay_MouseLeftButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        var action = _onClick;
+        HideToast();
+        action?.Invoke();
+    }
+
+    private void HideToast()
+    {
+        _hideTimer.Stop();
+        _topmostTimer.Stop();
+        _onClick = null;
+        Hide();
     }
 }

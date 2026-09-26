@@ -28,8 +28,7 @@ public partial class MainWindow : Window
     private static readonly Brush BatteryRed = CreateFrozenBrush("#FF003C");
     private readonly DispatcherTimer _clockTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     private readonly DispatcherTimer _cursorHideTimer = new() { Interval = TimeSpan.FromMilliseconds(650) };
-    private readonly DispatcherTimer _notificationTimer = new() { Interval = TimeSpan.FromSeconds(4) };
-    private Action? _notificationAction;
+    private readonly ToastOverlay _toastOverlay = new();
     private readonly DispatcherTimer _coverExitTimer = new() { Interval = TimeSpan.FromMilliseconds(350) };
     private readonly DispatcherTimer _wifiScanTimer = new() { Interval = TimeSpan.FromSeconds(8) };
     private readonly DispatcherTimer _deviceScanTimer = new() { Interval = TimeSpan.FromSeconds(10) };
@@ -75,7 +74,7 @@ public partial class MainWindow : Window
     private WinKeyOverlayWindow? _winKeyOverlay;
     private readonly List<IntPtr> _homeTaskThumbnails = new();
     private WifiNetwork? _pendingWifiNetwork;
-    private IReadOnlyList<BluetoothDevice> _cachedBluetoothDevices = Array.Empty<BluetoothDevice>();
+    private List<BluetoothDevice> _cachedBluetoothDevices = [];
     private bool _wifiScanInProgress;
     private IReadOnlyList<TaskWindowEntry> _altTabWindows = Array.Empty<TaskWindowEntry>();
     private int _altTabIndex;
@@ -118,7 +117,6 @@ public partial class MainWindow : Window
             _cursorHideTimer.Stop();
         };
         _clockTimer.Tick += (_, _) => UpdateClock();
-        _notificationTimer.Tick += (_, _) => { _notificationTimer.Stop(); NotificationToast.Visibility = Visibility.Collapsed; };
         _coverExitTimer.Tick += (_, _) =>
         {
             _coverExitTimer.Stop();
@@ -1068,24 +1066,7 @@ try
 
     private void ShowNotification(string message, Action? onClick = null)
     {
-        _notificationAction = onClick;
-        NotificationText.Text = message.ToUpperInvariant();
-        NotificationToast.Visibility = Visibility.Visible;
-        if (!Topmost)
-        {
-            Topmost = true;
-            Dispatcher.BeginInvoke(() => Topmost = false, DispatcherPriority.ApplicationIdle);
-        }
-        _notificationTimer.Stop();
-        _notificationTimer.Start();
-    }
-
-    private void NotificationToast_Click(object sender, MouseButtonEventArgs e)
-    {
-        NotificationToast.Visibility = Visibility.Collapsed;
-        _notificationTimer.Stop();
-        _notificationAction?.Invoke();
-        _notificationAction = null;
+        _toastOverlay.ShowToast(message, onClick);
     }
 
     private const string IconNetwork = "\uE701";
@@ -1093,6 +1074,7 @@ try
     private const string IconAdd = "\uE8B7";
     private const string IconCheck = "\uE73E";
     private const string IconAudio = "\uE7F5";
+    private const string IconBluetooth = "\uE702";
 
     private void Notify(string toast, string title, string message, string icon = "\uE7BA", string? tag = null)
     {
@@ -2060,7 +2042,7 @@ try
             if (wifi) { WifiNetworksList.ItemsSource = await ConnectionService.ScanWifiAsync(); CheckListBoxArrows(); }
             else
             {
-                _cachedBluetoothDevices = await ConnectionService.ScanBluetoothAsync();
+                _cachedBluetoothDevices = (await ConnectionService.ScanBluetoothAsync()).ToList();
                 BluetoothDevicesList.ItemsSource = _cachedBluetoothDevices;
             }
             if (showStatus) StatusText.Text = "CONNECTION SCAN COMPLETE";
@@ -2073,10 +2055,10 @@ try
     {
         try
         {
-            _cachedBluetoothDevices = await ConnectionService.ScanBluetoothAsync();
+            _cachedBluetoothDevices = (await ConnectionService.ScanBluetoothAsync()).ToList();
             BluetoothDevicesList.ItemsSource = _cachedBluetoothDevices;
         }
-        catch { _cachedBluetoothDevices = Array.Empty<BluetoothDevice>(); }
+        catch { _cachedBluetoothDevices = []; }
     }
 
     private async void RefreshConnections_Click(object sender, RoutedEventArgs e) =>
@@ -2135,16 +2117,41 @@ try
         }
         catch (Exception exception) { ShowNotification($"Wi-Fi connection failed: {exception.Message}"); }
     }
+    private async void WifiNetworkForget_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: WifiNetwork network }) return;
+        try
+        {
+            await ConnectionService.ForgetWifiAsync(network);
+            Notify($"Forgot {network.Name}", "Wi-Fi profile removed", $"{network.Name} forgotten", IconNetwork);
+            await RefreshConnectionsAsync(true);
+        }
+        catch (Exception exception) { ShowNotification($"Could not forget {network.Name}: {exception.Message}"); }
+    }
+
     private async void BluetoothDeviceAction_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not Button { Tag: BluetoothDevice device }) return;
         var wasConnected = device.Connected;
-        bool success;
-        if (wasConnected) success = await ConnectionService.DisconnectBluetoothAsync(device);
-        else success = await ConnectionService.ConnectBluetoothAsync(device);
-        ShowNotification(success
-            ? wasConnected ? $"{device.Name} disconnected" : $"{device.Name} connected"
-            : $"Could not {(wasConnected ? "disconnect" : "connect")} {device.Name}");
+        if (wasConnected)
+        {
+            var disconnProd = await ConnectionService.DisconnectBluetoothAsync(device);
+            ShowNotification(disconnProd
+                ? $"{device.Name} disconnected"
+                : $"Could not disconnect {device.Name}");
+            if (disconnProd) UpdateBluetoothDeviceState(device.Address, connected: false);
+        }
+        else
+        {
+            var result = await ConnectionService.ConnectBluetoothAsync(device);
+            ShowNotification(result switch
+            {
+                BluetoothConnectResult.Success => $"{device.Name} connected",
+                BluetoothConnectResult.PairingFailed => "Could not pair",
+                _ => "Could not connect",
+            });
+            if (result == BluetoothConnectResult.Success) UpdateBluetoothDeviceState(device.Address, connected: true);
+        }
         CheckEarphoneStatus();
         for (var attempt = 0; attempt < 3; attempt++)
         {
@@ -2153,6 +2160,36 @@ try
             var refreshed = _cachedBluetoothDevices.FirstOrDefault(d => d.Address == device.Address);
             if (refreshed is not null && refreshed.Connected != wasConnected) break;
         }
+    }
+
+    private void UpdateBluetoothDeviceState(ulong address, bool connected)
+    {
+        for (var index = 0; index < _cachedBluetoothDevices.Count; index++)
+        {
+            if (_cachedBluetoothDevices[index].Address != address) continue;
+            var updated = _cachedBluetoothDevices[index] with { Connected = connected };
+            _cachedBluetoothDevices[index] = updated;
+            break;
+        }
+        BluetoothDevicesList.ItemsSource = null;
+        BluetoothDevicesList.ItemsSource = _cachedBluetoothDevices;
+    }
+
+    private async void BluetoothDeviceForget_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: BluetoothDevice device }) return;
+        try
+        {
+            if (device.Connected)
+            {
+                await ConnectionService.DisconnectBluetoothAsync(device);
+                await Task.Delay(300);
+            }
+            await ConnectionService.ForgetBluetoothDeviceAsync(device);
+            Notify($"Forgot {device.Name}", "Bluetooth device unpaired", $"{device.Name} forgotten", IconBluetooth);
+            await RefreshConnectionsAsync(false);
+        }
+        catch (Exception exception) { ShowNotification($"Could not forget {device.Name}: {exception.Message}"); }
     }
 
     private void CloseConnections_Click(object sender, RoutedEventArgs e)
@@ -3531,6 +3568,37 @@ private static List<TaskWindowEntry> GetTaskWindows(IntPtr shellHandle)
         return windows;
     }
 
+    internal void RaiseToFront()
+    {
+        _suppressFocusRestore = true;
+        _previousForegroundWindow = IntPtr.Zero;
+        CloseWinKeyOverlay();
+        if (_altTabActive) CloseAltTabOverlay();
+        if (!IsVisible) Show();
+        var handle = new WindowInteropHelper(this).Handle;
+        Topmost = true;
+        ShowWindow(handle, 9);
+        WindowState = WindowState.Maximized;
+        BringWindowToTop(handle);
+        var foregroundThread = GetWindowThreadProcessId(GetForegroundWindow(), out _);
+        var currentThread = GetNativeThreadId();
+        var attached = false;
+        try
+        {
+            if (foregroundThread != currentThread)
+                attached = AttachThreadInput(currentThread, foregroundThread, true);
+            SetForegroundWindow(handle);
+            SetFocus(handle);
+        }
+        finally
+        {
+            if (attached) AttachThreadInput(currentThread, foregroundThread, false);
+        }
+        Activate();
+        MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
+        Dispatcher.BeginInvoke(() => Topmost = false, DispatcherPriority.ApplicationIdle);
+    }
+
     private void CapturePreviousForegroundWindow()
     {
         var foreground = GetForegroundWindow();
@@ -3997,6 +4065,7 @@ private static List<TaskWindowEntry> GetTaskWindows(IntPtr shellHandle)
             _keyboardGuard?.Dispose();
             _winKeyOverlay?.ForceClose();
             _batteryOverlay?.ForceClose();
+            _toastOverlay.Close();
         }
         base.OnClosing(e);
     }

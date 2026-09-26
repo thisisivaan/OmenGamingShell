@@ -555,7 +555,7 @@ public partial class MainWindow
         if (track <= 0) track = 140;
         var fill = track * Math.Clamp(pct, 0, 100) / 100.0;
         VolumeBarFill.Width = fill;
-        VolumeThumb.Margin = new Thickness(Math.Clamp(fill - 6.5, 0, track - 13), 0, 0, 0);
+        VolumeThumb.Margin = new Thickness(Math.Clamp(fill - 6, 0, track - 12), 0, 0, 0);
         VolumeText.Text = pct.ToString();
     }
 
@@ -565,7 +565,7 @@ public partial class MainWindow
         if (track <= 0) track = 140;
         var fill = track * Math.Clamp(pct, 0, 100) / 100.0;
         BrightnessBarFill.Width = fill;
-        BrightnessThumb.Margin = new Thickness(Math.Clamp(fill - 6.5, 0, track - 13), 0, 0, 0);
+        BrightnessThumb.Margin = new Thickness(Math.Clamp(fill - 6, 0, track - 12), 0, 0, 0);
         BrightnessText.Text = pct.ToString();
     }
 
